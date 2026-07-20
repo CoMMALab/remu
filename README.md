@@ -1,27 +1,14 @@
 # remu
 
-A MuJoCo-backed emulator for the Franka FCI (libfranka) network protocol.
+A MuJoCo-backed emulator for the robots and peripherals of a franka fr3 and realsenses.
 `remu` speaks the same TCP/UDP wire protocol as a real Franka robot, so a
-controller built on libfranka — RTPDemo included — can connect to `127.0.0.1`
-exactly as it would connect to hardware, and drive a simulated FR3 in MuJoCo
+controller built on libfranka can connect to `127.0.0.1` exactly as it would connect to hardware, and drive a simulated FR3 in MuJoCo
 via position, velocity, or torque control.
 
 ## Protocol version
 
 `remu` targets **robot server protocol v9** — libfranka **0.15.x**, matching
-the 0.15.3 build in `frankabridge`. Verified byte-for-byte against the
-vendored `frankabridge/libfranka` headers (`kVersion = 9`,
-`sizeof(RobotState) == 2373`), and validated end to end by linking a real
-libfranka 0.15.3 client against a running emulator.
-
-This is deliberately **not** the v10 protocol used by libfranka >= 0.18.
-The two are wire-incompatible in ways that fail loudly:
-
-| | v9 (libfranka 0.15.x) | v10 (libfranka >= 0.18) |
-|---|---|---|
-| `RobotState` | 2373 B, `double` | 1377 B, `float` |
-| accelerometer fields | absent | present |
-| `kGetRobotModel` | 12 | 11 |
+the 0.15.3 build in `frankabridge`. 
 
 If you ever move to a newer libfranka, `RobotState` size is the first thing
 that breaks: libfranka throws `ProtocolException("libfranka: incorrect
@@ -77,52 +64,6 @@ remu --scene-mjcf /path/to/complete_scene.xml
 Then point your libfranka-based controller at IP `127.0.0.1` (the default
 FCI command port, 1337, matches the real robot) — no code changes needed to
 switch between `remu` and real hardware.
-
-## Emulated cameras
-
-An emulated Intel RealSense D435i renders color + depth from a MuJoCo camera
-and serves them on TCP 1338. `shim/pyrealsense2.py` is a drop-in replacement
-for the RealSense SDK that reads that stream, so **pointcloud_perception runs
-unmodified against the simulated scene** — the same trick the FCI server
-plays on libfranka, one layer up.
-
-```bash
-# Everything at once: physics + FCI (1337) + camera (1338) + browser viewer
-MUJOCO_GL=egl python scripts/run_fci_viser.py
-
-# In the perception container (the shim is mounted at /opt/remu/shim by
-# docker-compose, and is NOT on PYTHONPATH unless you put it there):
-PYTHONPATH=/opt/remu/shim python visualize_cameras.py
-```
-
-The camera stands 1 m in front of the robot base at 0.6 m, aimed at the
-workspace (`--camera-distance` / `--camera-height`, or `--no-camera`), and is
-drawn in the viser scene as an axes triad plus an orange frustum. Point
-`$REMU_CAMERA_ADDR` (`host:port`) elsewhere if the emulator isn't local.
-
-Because the emulator knows every extrinsic exactly, the AprilTag calibration
-is unnecessary: the run script writes ground truth to `calibration.remu.json`
-(keyed `realsense/<serial>`, plus an identity `robot/base`). It deliberately
-does **not** touch `pointcloud_perception/calibration.json` — copy the entries
-across yourself when you want them.
-
-Fidelity, and where it stops:
-
-- Depth and color are rendered from one MuJoCo camera at one resolution, so
-  they are aligned by construction and `rs.align` is an identity pass.
-- Intrinsics are *derived* from the MJCF camera's `fovy` rather than
-  hardcoded, so they can't drift from what is actually being rendered. At
-  640×480 that gives fx = fy ≈ 617, matching a real D435i's factory values.
-- Out-of-range depth becomes 0, RealSense's "no reading" sentinel, so the
-  perception code's zero-vertex rejection runs the same path as on hardware.
-- `decimation_filter` and `threshold_filter` are implemented for real —
-  they change point count and range, which is what the perception filters are
-  tuned against. The spatial/temporal/hole-filling/disparity filters are
-  identity passes: they exist to denoise a real sensor, and rendered depth has
-  no noise to remove. So toggling `FILTERS["rs_sdk"]` changes density and
-  range, but not smoothness.
-- There is no sensor noise model, no IMU, and no exposure/auto-white-balance
-  behaviour.
 
 ## Notes
 
