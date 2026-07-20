@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: remu
+Version: 0.1.0
+Summary: MuJoCo-backed emulator for the Franka FCI (libfranka) network protocol.
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: mujoco>=3.0
+Requires-Dist: numpy>=1.26
+Requires-Dist: robot_descriptions>=1.12
+Provides-Extra: viser
+Requires-Dist: mjviser; extra == "viser"
+Requires-Dist: viser; extra == "viser"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-timeout; extra == "dev"

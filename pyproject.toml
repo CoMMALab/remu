@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "remu"
+version = "0.1.0"
+description = "MuJoCo-backed emulator for the Franka FCI (libfranka) network protocol."
+requires-python = ">=3.10"
+readme = "README.md"
+dependencies = [
+    "mujoco>=3.0",
+    "numpy>=1.26",
+    "robot_descriptions>=1.12",
+]
+
+[project.optional-dependencies]
+viser = ["mjviser", "viser"]
+dev = ["pytest", "pytest-timeout"]
+
+[project.scripts]
+remu = "remu.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+remu = ["models/*.urdf"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

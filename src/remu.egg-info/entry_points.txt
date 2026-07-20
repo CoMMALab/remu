@@ -1,0 +1,2 @@
+[console_scripts]
+remu = remu.cli:main
