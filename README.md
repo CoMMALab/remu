@@ -46,10 +46,13 @@ src/remu/
   protocol/   libfranka wire format: Command enums, message structs, RobotState packing
   sim/        MuJoCo physics backend (MujocoSim) + scene composition (build_scene_xml)
   server/     FrankaFciServer: TCP command channel + UDP 1kHz state channel
+  camera/     Emulated RealSense D435i: MuJoCo rendering + frame server (TCP 1338)
   viewer/     MujocoPassiveViewer (native) and ViserViewer (browser, via mjviser)
   cli.py      `remu` command-line entry point
   models/     fr3.urdf served to clients via GetRobotModel
-tests/        pytest suite (protocol, robot_state, scene, sim, server integration)
+shim/         pyrealsense2.py -- drop-in SDK replacement for the perception stack
+scripts/      run_fci_viser.py: the whole stack (physics + FCI + camera + browser)
+tests/        pytest suite (protocol, robot_state, scene, sim, server + camera integration)
 references/   vendored libfranka-sim reference (Genesis-based); remu adapts its
               protocol/server design onto MuJoCo
 ```
@@ -75,6 +78,52 @@ Then point your libfranka-based controller at IP `127.0.0.1` (the default
 FCI command port, 1337, matches the real robot) — no code changes needed to
 switch between `remu` and real hardware.
 
+## Emulated cameras
+
+An emulated Intel RealSense D435i renders color + depth from a MuJoCo camera
+and serves them on TCP 1338. `shim/pyrealsense2.py` is a drop-in replacement
+for the RealSense SDK that reads that stream, so **pointcloud_perception runs
+unmodified against the simulated scene** — the same trick the FCI server
+plays on libfranka, one layer up.
+
+```bash
+# Everything at once: physics + FCI (1337) + camera (1338) + browser viewer
+MUJOCO_GL=egl python scripts/run_fci_viser.py
+
+# In the perception container (the shim is mounted at /opt/remu/shim by
+# docker-compose, and is NOT on PYTHONPATH unless you put it there):
+PYTHONPATH=/opt/remu/shim python visualize_cameras.py
+```
+
+The camera stands 1 m in front of the robot base at 0.6 m, aimed at the
+workspace (`--camera-distance` / `--camera-height`, or `--no-camera`), and is
+drawn in the viser scene as an axes triad plus an orange frustum. Point
+`$REMU_CAMERA_ADDR` (`host:port`) elsewhere if the emulator isn't local.
+
+Because the emulator knows every extrinsic exactly, the AprilTag calibration
+is unnecessary: the run script writes ground truth to `calibration.remu.json`
+(keyed `realsense/<serial>`, plus an identity `robot/base`). It deliberately
+does **not** touch `pointcloud_perception/calibration.json` — copy the entries
+across yourself when you want them.
+
+Fidelity, and where it stops:
+
+- Depth and color are rendered from one MuJoCo camera at one resolution, so
+  they are aligned by construction and `rs.align` is an identity pass.
+- Intrinsics are *derived* from the MJCF camera's `fovy` rather than
+  hardcoded, so they can't drift from what is actually being rendered. At
+  640×480 that gives fx = fy ≈ 617, matching a real D435i's factory values.
+- Out-of-range depth becomes 0, RealSense's "no reading" sentinel, so the
+  perception code's zero-vertex rejection runs the same path as on hardware.
+- `decimation_filter` and `threshold_filter` are implemented for real —
+  they change point count and range, which is what the perception filters are
+  tuned against. The spatial/temporal/hole-filling/disparity filters are
+  identity passes: they exist to denoise a real sensor, and rendered depth has
+  no noise to remove. So toggling `FILTERS["rs_sdk"]` changes density and
+  range, but not smoothness.
+- There is no sensor noise model, no IMU, and no exposure/auto-white-balance
+  behaviour.
+
 ## Notes
 
 - Control modes: joint position, joint velocity, and joint torque (external
@@ -85,5 +134,9 @@ switch between `remu` and real hardware.
   applies control uniformly as a joint torque (`qfrc_applied`) computed from
   whichever mode is active, so behavior doesn't depend on what actuators the
   source MJCF happens to define.
-- Virtual cameras are not yet implemented — next step once this control path
-  is validated end-to-end against RTPDemo.
+- Offscreen camera rendering needs a GL platform. On a headless machine set
+  `MUJOCO_GL=egl`; without it MuJoCo tries GLFW and fails on the missing
+  `$DISPLAY`. Each `mujoco.Renderer` owns a GL context bound to the thread
+  that created it, so cameras are bound lazily on the physics thread — never
+  call `EmulatedD435i.bind()` from anywhere else, or every later render fails
+  with `EGL_BAD_ACCESS`.

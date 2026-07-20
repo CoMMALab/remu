@@ -62,6 +62,7 @@ def build_scene_xml(
     extra_object_mjcfs: Iterable[Path] = (),
     extra_body_xml: Iterable[str] = (),
     add_ground: bool = True,
+    cameras: Iterable = (),
 ) -> Path:
     """Compose a scene MJCF and write it to a temp file; returns the file path.
 
@@ -72,6 +73,9 @@ def build_scene_xml(
         extra_body_xml: Raw ``<body>...</body>`` XML snippets to place
             directly in the scene worldbody (e.g. a table, a prop).
         add_ground: Whether to add a checkered ground plane + directional light.
+        cameras: :class:`~remu.camera.d435i.EmulatedD435i` instances to place
+            in the scene. Each contributes a ``<camera>`` the camera server
+            renders from; a camera not included here cannot be bound.
     """
     robot_path = Path(robot_mjcf) if robot_mjcf is not None else default_fr3_mjcf()
     if not robot_path.exists():
@@ -81,7 +85,7 @@ def build_scene_xml(
         f'  <include file="{Path(p).resolve()}"/>' for p in extra_object_mjcfs
     )
     ground = _GROUND_SNIPPET if add_ground else ""
-    extra_bodies = "\n".join(extra_body_xml)
+    extra_bodies = "\n".join(list(extra_body_xml) + [c.mjcf_body() for c in cameras])
 
     xml = _SCENE_TEMPLATE.format(
         robot_path=robot_path.resolve(),
