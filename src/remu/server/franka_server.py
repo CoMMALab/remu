@@ -362,6 +362,11 @@ class FrankaFciServer:
 
             self.robot_state.state["q"] = list(sim_state["q"])
             self.robot_state.state["dq"] = list(sim_state["dq"])
+            # Report the command trajectory after the simulator's FR3 limit
+            # filter, matching the q_d/dq_d/ddq_d semantics of real FCI state.
+            self.robot_state.state["q_d"] = list(sim_state["q_d"])
+            self.robot_state.state["dq_d"] = list(sim_state["dq_d"])
+            self.robot_state.state["ddq_d"] = list(sim_state["ddq_d"])
             self.robot_state.state["tau_J"] = list(sim_state["tau_J"])
             self.robot_state.state["O_T_EE"] = list(sim_state["O_T_EE"])
 

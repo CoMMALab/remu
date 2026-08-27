@@ -65,6 +65,25 @@ Then point your libfranka-based controller at IP `127.0.0.1` (the default
 FCI command port, 1337, matches the real robot) — no code changes needed to
 switch between `remu` and real hardware.
 
+## FR3 command limits
+
+Joint position and velocity commands are filtered at the 1 kHz physics rate.
+In particular, the allowed velocity is recomputed for every joint and every
+step from the current commanded position using Franka's asymmetric
+[position-based velocity limits](https://frankarobotics.github.io/docs/robot_specifications.html#position-based-velocity-limits).
+The filter also applies the published joint position, nominal velocity,
+acceleration, jerk, torque, and torque-rate limits. The constrained trajectory
+is exposed to FCI clients as `q_d`, `dq_d`, and `ddq_d`.
+
+To measure raw physics headroom and sustained 1 kHz pacing on your machine:
+
+```bash
+python scripts/benchmark_1khz.py --duration 30
+```
+
+The benchmark reports effective frequency, step-interval percentiles, missed
+deadlines, state validity, and clean thread shutdown.
+
 ## Notes
 
 - Control modes: joint position, joint velocity, and joint torque (external
