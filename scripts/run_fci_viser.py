@@ -2,7 +2,7 @@
 """Run the Franka FCI emulator with MuJoCo physics, rendered in the browser
 via mjviser, with an emulated RealSense D435i watching the workspace.
 
-Starts four things and holds them together until Ctrl+C:
+Starts five things and holds them together until Ctrl+C:
 
   1. A MuJoCo scene (FR3 arm + ground plane, an emulated D435i, plus any
      ``--object`` MJCFs)
@@ -10,7 +10,8 @@ Starts four things and holds them together until Ctrl+C:
      camera drawn as a labelled frustum so its placement is visible
   3. The FCI server on TCP 1337, so a libfranka client connecting to
      ``127.0.0.1`` drives the simulated arm
-  4. The camera server on TCP 1338, which ``remu/shim/pyrealsense2.py``
+  4. The libfranka gripper server on TCP 1338.
+  5. The camera server on TCP 1339, which ``remu/shim/pyrealsense2.py``
      connects to so pointcloud_perception sees a RealSense
 
 The camera is hardcoded to stand 1 m in front of the robot base at 0.6 m
@@ -18,7 +19,7 @@ height, tilted down at the workspace. Override with ``--camera-distance`` /
 ``--camera-height``, or drop it entirely with ``--no-camera``.
 
 Physics runs in the foreground thread and pushes state to mjviser (and
-renders camera frames) on every step; both servers run in the background.
+renders camera frames) on every step; the network servers run in the background.
 
 Usage:
     python scripts/run_fci_viser.py
@@ -46,7 +47,9 @@ from remu.camera import (  # noqa: E402
     optical_pose_to_calibration,
 )
 from remu.protocol.franka_protocol import COMMAND_PORT  # noqa: E402
+from remu.protocol.gripper_protocol import GRIPPER_COMMAND_PORT  # noqa: E402
 from remu.server.franka_server import FrankaFciServer  # noqa: E402
+from remu.server.gripper_server import FrankaGripperServer  # noqa: E402
 from remu.sim.mujoco_sim import MujocoSim  # noqa: E402
 from remu.sim.scene import build_scene_xml  # noqa: E402
 from remu.viewer.viser_viewer import ViserViewer  # noqa: E402
@@ -66,6 +69,11 @@ def parse_args(argv=None):
     )
     parser.add_argument("--host", default="0.0.0.0", help="FCI server bind host")
     parser.add_argument("--port", type=int, default=COMMAND_PORT, help="FCI TCP command port")
+    parser.add_argument("--model-library", default=None,
+                        help="Prebuilt v9 model library for cross-platform clients")
+    parser.add_argument("--gripper-port", type=int, default=GRIPPER_COMMAND_PORT,
+                        help="libfranka gripper TCP port")
+    parser.add_argument("--no-gripper", action="store_true", help="Run without the Franka Hand")
     parser.add_argument("--viser-host", default="0.0.0.0", help="mjviser bind host")
     parser.add_argument("--viser-port", type=int, default=8080, help="mjviser server port")
     parser.add_argument("--no-camera", action="store_true", help="Run without the emulated D435i")
@@ -96,9 +104,12 @@ def main(argv=None):
 
     scene_path = build_scene_xml(
         robot_mjcf=args.robot_mjcf, extra_object_mjcfs=args.objects, cameras=cameras,
+        add_gripper=not args.no_gripper,
     )
 
-    sim = MujocoSim(scene_path, dt=args.dt, realtime=True)
+    sim = MujocoSim(
+        scene_path, dt=args.dt, realtime=True, enable_gripper=not args.no_gripper
+    )
     sim.build()
 
     viewer = ViserViewer(sim.model, sim.data, host=args.viser_host, port=args.viser_port)
@@ -106,48 +117,61 @@ def main(argv=None):
     for camera in cameras:
         viewer.add_camera(camera)
 
-    server = FrankaFciServer(sim, host=args.host, port=args.port)
-    server.start(background=True)
-
+    server = FrankaFciServer(
+        sim, host=args.host, port=args.port, model_library_path=args.model_library
+    )
+    gripper_server = (
+        None
+        if args.no_gripper
+        else FrankaGripperServer(sim, host=args.host, port=args.gripper_port)
+    )
     camera_server = None
-    if cameras:
-        camera_server = CameraServer(cameras, host=args.host, port=args.camera_port)
-        # attach() before start() so a client that connects immediately finds
-        # frames already being rendered rather than an empty mailbox.
-        camera_server.attach(sim)
-        camera_server.start(background=True)
-        # The emulator knows every extrinsic exactly, so the AprilTag
-        # calibration pointcloud_perception normally runs is unnecessary --
-        # write the ground truth out instead. robot/base is identity because
-        # the FR3 sits at the world origin in the remu scene.
-        calibration = optical_pose_to_calibration(cameras)
-        calibration["robot/base"] = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
-        CALIB_OUT.write_text(json.dumps(calibration, indent=2))
-
-    print()
-    print("=" * 68)
-    print(f"  viewer         http://localhost:{args.viser_port}")
-    print(f"  FCI server     {args.host}:{args.port}  (connect as robot IP 127.0.0.1)")
-    if camera_server:
-        print(f"  camera server  {args.host}:{args.camera_port}  (serial {args.camera_serial})")
-        print(f"  extrinsics     {CALIB_OUT}")
-        print(f"  perception     PYTHONPATH={Path(__file__).resolve().parent.parent / 'shim'}")
-    print("  Ctrl+C to stop")
-    print("=" * 68)
-    print()
-
     try:
+        server.start(background=True)
+        if gripper_server is not None:
+            gripper_server.start(background=True)
+        if cameras:
+            camera_server = CameraServer(cameras, host=args.host, port=args.camera_port)
+            # Attach before start so an immediate client finds rendered frames.
+            camera_server.attach(sim)
+            camera_server.start(background=True)
+            # The emulator knows every extrinsic exactly, so write ground truth
+            # instead of requiring the perception stack's AprilTag calibration.
+            calibration = optical_pose_to_calibration(cameras)
+            calibration["robot/base"] = [
+                [1, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1],
+            ]
+            CALIB_OUT.write_text(json.dumps(calibration, indent=2))
+
+        print()
+        print("=" * 68)
+        print(f"  viewer         http://localhost:{args.viser_port}")
+        print(f"  FCI server     {args.host}:{server.port}  (connect as robot IP 127.0.0.1)")
+        if gripper_server:
+            print(f"  gripper server {args.host}:{gripper_server.port}")
+        if camera_server:
+            print(f"  camera server  {args.host}:{camera_server.port}  (serial {args.camera_serial})")
+            print(f"  extrinsics     {CALIB_OUT}")
+            print(f"  perception     PYTHONPATH={Path(__file__).resolve().parent.parent / 'shim'}")
+        print("  Ctrl+C to stop")
+        print("=" * 68)
+        print()
+
         sim.run()
     except KeyboardInterrupt:
         print("\nShutting down...")
     finally:
         if camera_server:
             camera_server.stop()
+        if gripper_server:
+            gripper_server.stop()
         server.stop()
         sim.stop()
         viewer.close()
-        # build_scene_xml writes next to the robot MJCF so relative meshdirs
-        # still resolve; clean up our own file rather than leaving it behind.
+        # Scene assets use absolute paths, so the composed XML itself is temporary.
         Path(scene_path).unlink(missing_ok=True)
 
     return 0

@@ -43,6 +43,23 @@ class ConnectStatus(enum.IntEnum):
     kIncompatibleLibraryVersion = 1
 
 
+class ModelLibraryStatus(enum.IntEnum):
+    kSuccess = 0
+    kError = 1
+
+
+class ModelLibraryArchitecture(enum.IntEnum):
+    kX64 = 0
+    kX86 = 1
+    kARM = 2
+    kARM64 = 3
+
+
+class ModelLibrarySystem(enum.IntEnum):
+    kLinux = 0
+    kWindows = 1
+
+
 class MoveStatus(enum.IntEnum):
     kSuccess = 0
     kMotionStarted = 1

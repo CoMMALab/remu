@@ -2,20 +2,17 @@
 
 A MuJoCo-backed emulator for the robots and peripherals of a franka fr3 and realsenses.
 `remu` speaks the same TCP/UDP wire protocol as a real Franka robot, so a
-controller built on libfranka can connect to `127.0.0.1` exactly as it would connect to hardware, and drive a simulated FR3 in MuJoCo
-via position, velocity, or torque control.
+controller built on libfranka can connect to `127.0.0.1` exactly as it would connect to hardware, and drive a simulated FR3 and Franka Hand in MuJoCo via position, velocity, torque, and gripper commands.
 
 ## Protocol version
 
-`remu` targets **robot server protocol v9** — libfranka **0.15.x**, matching
+`remu` targets **robot server protocol v9** and **gripper server protocol v3** — libfranka **0.15.x**, matching
 the 0.15.3 build in `frankabridge`. 
 
-If you ever move to a newer libfranka, `RobotState` size is the first thing
-that breaks: libfranka throws `ProtocolException("libfranka: incorrect
-object size")` on the first UDP state packet. Note the handshake will *still*
-succeed — `connect()` only checks the status byte and never validates the
-version number — so a version mismatch surfaces one step later than you'd
-expect.
+If you move to a newer libfranka, remu rejects the connection with an
+incompatible-version response. Protocol v10 changes both command numbering and
+the `RobotState` wire layout, so accepting it as v9 would otherwise produce
+misleading failures later in client initialization.
 
 ## Setup
 
@@ -32,16 +29,15 @@ conda activate remu
 src/remu/
   protocol/   libfranka wire format: Command enums, message structs, RobotState packing
   sim/        MuJoCo physics backend (MujocoSim) + scene composition (build_scene_xml)
-  server/     FrankaFciServer: TCP command channel + UDP 1kHz state channel
-  camera/     Emulated RealSense D435i: MuJoCo rendering + frame server (TCP 1338)
+  server/     Arm server (TCP 1337) and Franka Hand server (TCP 1338)
+  camera/     Emulated RealSense D435i: MuJoCo rendering + frame server (TCP 1339)
   viewer/     MujocoPassiveViewer (native) and ViserViewer (browser, via mjviser)
   cli.py      `remu` command-line entry point
   models/     fr3.urdf served to clients via GetRobotModel
 shim/         pyrealsense2.py -- drop-in SDK replacement for the perception stack
 scripts/      run_fci_viser.py: the whole stack (physics + FCI + camera + browser)
 tests/        pytest suite (protocol, robot_state, scene, sim, server + camera integration)
-references/   vendored libfranka-sim reference (Genesis-based); remu adapts its
-              protocol/server design onto MuJoCo
+references/   protocol reference material used by the emulator
 ```
 
 ## Usage
@@ -56,14 +52,30 @@ remu --viewer viser --viser-port 8080
 # No rendering, just the physics + FCI server
 remu --viewer none
 
+# Arm-only operation, for a custom model without conventional hand attachment names
+remu --no-gripper
+
 # A different robot MJCF / joint names, or a fully custom scene
 remu --robot-mjcf /path/to/robot.xml --joint-names j1 j2 j3 j4 j5 j6 j7
 remu --scene-mjcf /path/to/complete_scene.xml
 ```
 
 Then point your libfranka-based controller at IP `127.0.0.1` (the default
-FCI command port, 1337, matches the real robot) — no code changes needed to
-switch between `remu` and real hardware.
+FCI command port 1337 and gripper port 1338 match the real robot) — no code
+changes are needed to switch between `remu` and real hardware. The Franka Hand
+is physics-backed and appears in both the native and Viser viewers by default.
+Its non-blocking command/state handling follows the approach used by
+[franky-sim](https://github.com/TimSchneider42/franky-sim), while its explicit
+gripper backend boundary and protocol-v3 framing also draw from
+[libfranka-sim](https://github.com/BarisYazici/libfranka-sim).
+
+Unmodified libfranka 0.15 clients may call `Robot::loadModel()`. Remu handles
+the corresponding v9 `LoadModelLibrary` command by compiling a small native
+FR3 kinematics library on first request. This supports a Linux client with the
+same architecture as the remu host and requires `cc` (for example the compiler
+from `build-essential`). For a remote client with a different architecture,
+provide a compatible prebuilt library with `--model-library PATH` or the
+`REMU_MODEL_LIBRARY` environment variable.
 
 ## FR3 command limits
 

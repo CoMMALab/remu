@@ -10,7 +10,11 @@ from remu.camera.d435i import (
     look_at_axes,
     optical_pose_to_calibration,
 )
-from remu.camera.wire import DEPTH_SCALE, encode_frame, read_frame
+from remu.camera.wire import CAMERA_PORT, DEPTH_SCALE, encode_frame, read_frame
+
+
+def test_camera_uses_port_after_gripper():
+    assert CAMERA_PORT == 1339
 
 
 def test_intrinsics_match_a_real_d435i_color_stream():

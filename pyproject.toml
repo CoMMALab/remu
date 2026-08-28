@@ -9,7 +9,7 @@ description = "MuJoCo-backed emulator for the Franka FCI (libfranka) network pro
 requires-python = ">=3.10"
 readme = "README.md"
 dependencies = [
-    "mujoco>=3.0",
+    "mujoco>=3.2",
     "numpy>=1.26",
     "robot_descriptions>=1.12",
 ]
@@ -25,7 +25,7 @@ remu = "remu.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-remu = ["models/*.urdf"]
+remu = ["models/*.urdf", "models/*.c"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -5,9 +5,12 @@ step the MuJoCo physics loop in the foreground (with optional rendering).
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 from remu.protocol.franka_protocol import COMMAND_PORT
+from remu.protocol.gripper_protocol import GRIPPER_COMMAND_PORT
 from remu.server.franka_server import FrankaFciServer
+from remu.server.gripper_server import FrankaGripperServer
 from remu.sim.mujoco_sim import DEFAULT_JOINT_NAMES, MujocoSim
 from remu.sim.scene import build_scene_xml
 
@@ -24,15 +27,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--scene-mjcf",
         default=None,
-        help="A complete scene MJCF to use as-is, bypassing scene composition",
+        help="A complete scene MJCF to augment with the Franka Hand unless disabled",
     )
     parser.add_argument(
         "--object", action="append", default=[], dest="objects",
         help="Extra standalone MJCF file to include in the scene (repeatable)",
     )
     parser.add_argument("--urdf", default=None, help="URDF served via GetRobotModel")
+    parser.add_argument(
+        "--model-library",
+        default=None,
+        help="Prebuilt v9 model library for cross-platform FCI clients",
+    )
     parser.add_argument("--host", default="0.0.0.0", help="FCI server bind host")
     parser.add_argument("--port", type=int, default=COMMAND_PORT, help="FCI TCP command port")
+    parser.add_argument(
+        "--gripper-port", type=int, default=GRIPPER_COMMAND_PORT,
+        help="libfranka gripper TCP command port",
+    )
+    parser.add_argument("--no-gripper", action="store_true", help="Run without the Franka Hand")
     parser.add_argument(
         "--viewer",
         choices=["mujoco", "viser", "none"],
@@ -60,13 +73,19 @@ def main(argv=None):
     )
 
     if args.scene_mjcf:
-        scene_path = args.scene_mjcf
+        scene_path = build_scene_xml(
+            robot_mjcf=args.scene_mjcf, add_ground=False, add_gripper=not args.no_gripper
+        )
     else:
         scene_path = build_scene_xml(
-            robot_mjcf=args.robot_mjcf, extra_object_mjcfs=args.objects
+            robot_mjcf=args.robot_mjcf, extra_object_mjcfs=args.objects,
+            add_gripper=not args.no_gripper,
         )
 
-    sim = MujocoSim(scene_path, joint_names=args.joint_names, dt=args.dt)
+    sim = MujocoSim(
+        scene_path, joint_names=args.joint_names, dt=args.dt,
+        enable_gripper=not args.no_gripper,
+    )
     sim.build()
 
     viewer = None
@@ -79,22 +98,39 @@ def main(argv=None):
 
         viewer = ViserViewer(sim.model, sim.data, port=args.viser_port).attach(sim)
 
-    server = FrankaFciServer(sim, host=args.host, port=args.port, urdf_path=args.urdf)
-    server.start(background=True)
-
-    print(f"remu FCI emulator listening on {args.host}:{args.port}")
-    print("Point your libfranka client at '127.0.0.1' (or this host's IP) to connect.")
-    print("Press Ctrl+C to stop.")
-
+    server = FrankaFciServer(
+        sim,
+        host=args.host,
+        port=args.port,
+        urdf_path=args.urdf,
+        model_library_path=args.model_library,
+    )
+    gripper_server = (
+        None
+        if args.no_gripper
+        else FrankaGripperServer(sim, host=args.host, port=args.gripper_port)
+    )
     try:
+        server.start(background=True)
+        if gripper_server is not None:
+            gripper_server.start(background=True)
+
+        print(f"remu FCI emulator listening on {args.host}:{server.port}")
+        if gripper_server is not None:
+            print(f"remu gripper emulator listening on {args.host}:{gripper_server.port}")
+        print("Point your libfranka client at '127.0.0.1' (or this host's IP) to connect.")
+        print("Press Ctrl+C to stop.")
         sim.run()
     except KeyboardInterrupt:
         pass
     finally:
         server.stop()
+        if gripper_server is not None:
+            gripper_server.stop()
         sim.stop()
         if viewer is not None:
             viewer.close()
+        Path(scene_path).unlink(missing_ok=True)
 
     return 0
 
