@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--viewer",
         choices=["mujoco", "viser", "none"],
-        default="mujoco",
+        default="viser",
         help="Rendering backend: native MuJoCo passive viewer, browser-based mjviser, or none",
     )
     parser.add_argument("--viser-port", type=int, default=8080, help="mjviser server port")
