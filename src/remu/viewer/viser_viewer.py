@@ -66,6 +66,17 @@ class ViserViewer:
         import numpy as np
 
         T = camera.optical_pose()
+        if getattr(camera, "parent_body", None):
+            import mujoco
+
+            body_id = mujoco.mj_name2id(
+                self.model, mujoco.mjtObj.mjOBJ_BODY, camera.parent_body
+            )
+            if body_id >= 0:
+                world_from_base = np.eye(4)
+                world_from_base[:3, :3] = self.data.xmat[body_id].reshape(3, 3)
+                world_from_base[:3, 3] = self.data.xpos[body_id]
+                T = world_from_base @ T
         wxyz = _mat3_to_wxyz(T[:3, :3])
         position = T[:3, 3]
         intrin = camera.intrinsics

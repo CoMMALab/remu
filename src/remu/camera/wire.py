@@ -16,9 +16,9 @@ Frame::
 
     b"RMUC" | u32 header_len | header JSON | color bytes | depth bytes
 
-``color`` is H*W*3 uint8 RGB and ``depth`` is H*W uint16 in millimetres --
-the same formats ``rs.format.rgb8`` and ``rs.format.z16`` deliver, so the
-shim hands the perception code byte-identical buffers to the real SDK's.
+``color`` is uint8 RGB and ``depth`` is uint16 depth units. Protocol-v2
+headers carry independent shape, format, intrinsics, and byte-length metadata
+for each stream, allowing RGB and depth to use different profiles.
 """
 
 import json

@@ -130,13 +130,24 @@ class _Device:
             return "5.16.0.1 (remu)"
         raise RuntimeError(f"camera_info {key!r} not emulated")
 
+    def first_depth_sensor(self):
+        return _DepthSensor(self._info.get("depth_scale", wire.DEPTH_SCALE))
+
+
+class _DepthSensor:
+    def __init__(self, scale):
+        self._scale = scale
+
+    def get_depth_scale(self):
+        return self._scale
+
 
 class context:
     """Device enumeration. ``query_devices()`` asks the server what it serves."""
 
     def query_devices(self):
         try:
-            sock, response = _connect({"op": "list_devices"})
+            sock, response = _connect({"op": "list_devices", "vendor": "realsense"})
         except OSError:
             # No server running is the emulator's equivalent of no camera
             # plugged in, and the perception code already handles that.
@@ -162,11 +173,15 @@ class _Intrinsics:
 
 
 class _VideoStreamProfile:
-    def __init__(self, intrin):
+    def __init__(self, intrin, device=None):
         self.intrinsics = intrin
+        self._device = device
 
     def as_video_stream_profile(self):
         return self
+
+    def get_device(self):
+        return self._device
 
 
 # ── Frames ────────────────────────────────────────────────────────────────────
@@ -175,10 +190,12 @@ class _Frame:
     """Common frame behaviour. Truthiness matters: the perception loop does
     ``if not depth_frame or not color_frame: continue``."""
 
-    def __init__(self, data, intrin, timestamp_ms):
+    def __init__(self, data, intrin, timestamp_ms, depth_scale=wire.DEPTH_SCALE, frame_number=0):
         self._data = data
         self._intrin = intrin
         self.timestamp_ms = timestamp_ms
+        self._depth_scale = depth_scale
+        self._frame_number = frame_number
 
     def __bool__(self):
         return self._data is not None and self._data.size > 0
@@ -197,6 +214,9 @@ class _Frame:
     def get_timestamp(self):
         return self.timestamp_ms
 
+    def get_frame_number(self):
+        return self._frame_number
+
     @property
     def profile(self):
         return _VideoStreamProfile(_Intrinsics(self._intrin))
@@ -207,7 +227,7 @@ class _DepthFrame(_Frame):
         return self
 
     def get_distance(self, x, y):
-        return float(self._data[y, x]) * wire.DEPTH_SCALE
+        return float(self._data[y, x]) * self._depth_scale
 
 
 class _ColorFrame(_Frame):
@@ -252,14 +272,25 @@ class pipeline:
         self._sock = None
         self._lock = threading.Lock()
         self._latest = None
+        self._device = None
+        self._enabled = {stream.depth, stream.color}
 
     def start(self, cfg=None):
         serial = cfg.serial if cfg is not None else None
+        streams = [] if cfg is None else [
+            {"stream": kind, "width": width, "height": height, "format": fmt, "fps": fps}
+            for kind, width, height, fmt, fps in cfg.streams
+        ]
         try:
-            self._sock, _ = _connect({"op": "stream", "serial": serial}, timeout=5.0)
+            self._sock, response = _connect({
+                "op": "stream", "vendor": "realsense", "serial": serial, "streams": streams,
+            }, timeout=5.0)
         except OSError as e:
             raise RuntimeError(f"remu camera server unreachable at {_server_addr()}: {e}") from e
-        return _VideoStreamProfile(None)
+        self._device = _Device(response["device"])
+        if streams:
+            self._enabled = {request["stream"] for request in streams}
+        return _VideoStreamProfile(None, self._device)
 
     def wait_for_frames(self, timeout_ms=5000):
         """Block for the next frame off the wire.
@@ -277,12 +308,29 @@ class pipeline:
         except (ConnectionError, OSError) as e:
             raise RuntimeError(f"remu camera stream lost: {e}") from e
 
-        h, w = header["height"], header["width"]
-        color = np.frombuffer(color_bytes, dtype=np.uint8).reshape(h, w, 3)
-        depth = np.frombuffer(depth_bytes, dtype=np.uint16).reshape(h, w)
-        intrin = header["intrinsics"]
+        color_meta = header.get("color")
+        depth_meta = header.get("depth")
+        if color_meta is None:  # protocol v1 compatibility
+            h, w = header["height"], header["width"]
+            color_meta = depth_meta = {"width": w, "height": h, "intrinsics": header["intrinsics"]}
+        color = np.frombuffer(color_bytes, dtype=np.uint8).reshape(
+            color_meta["height"], color_meta["width"], 3
+        )
+        depth = np.frombuffer(depth_bytes, dtype=np.uint16).reshape(
+            depth_meta["height"], depth_meta["width"]
+        )
         ts = header["timestamp_ms"]
-        return _Composite(_DepthFrame(depth, intrin, ts), _ColorFrame(color, intrin, ts))
+        scale = header.get("depth_scale", wire.DEPTH_SCALE)
+        frame_number = header.get("frame_number", 0)
+        depth_frame = (
+            _DepthFrame(depth, depth_meta["intrinsics"], ts, scale, frame_number)
+            if stream.depth in self._enabled else None
+        )
+        color_frame = (
+            _ColorFrame(color, color_meta["intrinsics"], ts, frame_number=frame_number)
+            if stream.color in self._enabled else None
+        )
+        return _Composite(depth_frame, color_frame)
 
     def stop(self):
         if self._sock is not None:
@@ -345,7 +393,9 @@ class decimation_filter(_PassthroughFilter):
                            ("ppx", intrin["ppx"]), ("ppy", intrin["ppy"])):
             intrin[key] = value / mag
         intrin["width"], intrin["height"] = w, h
-        return type(frame)(data, intrin, frame.timestamp_ms)
+        return type(frame)(
+            data, intrin, frame.timestamp_ms, frame._depth_scale, frame._frame_number
+        )
 
 
 class threshold_filter(_PassthroughFilter):
@@ -356,18 +406,45 @@ class threshold_filter(_PassthroughFilter):
         hi = self.options.get(option.max_distance, 16.0) / wire.DEPTH_SCALE
         data = frame._data
         keep = (data >= lo) & (data <= hi)
-        return type(frame)(np.where(keep, data, 0).astype(np.uint16),
-                           frame._intrin, frame.timestamp_ms)
+        return type(frame)(
+            np.where(keep, data, 0).astype(np.uint16), frame._intrin,
+            frame.timestamp_ms, frame._depth_scale, frame._frame_number,
+        )
 
 
 class align:
-    """Identity: the emulator renders depth and color from one MuJoCo camera,
-    so they are already pixel-aligned at the same resolution."""
+    """Reproject co-located pinhole depth into the selected color profile."""
 
     def __init__(self, to_stream):
         self.to_stream = to_stream
 
     def process(self, frames):
+        if self.to_stream != stream.color or frames._depth is None or frames._color is None:
+            return frames
+        depth_frame, color_frame = frames._depth, frames._color
+        if depth_frame._data.shape == color_frame._data.shape[:2] and depth_frame._intrin == color_frame._intrin:
+            return frames
+        depth = depth_frame._data
+        source, target = depth_frame._intrin, color_frame._intrin
+        yy, xx = np.indices(depth.shape)
+        z = depth.astype(np.float32) * depth_frame._depth_scale
+        x = (xx + 0.5 - source["ppx"]) / source["fx"] * z
+        y = (yy + 0.5 - source["ppy"]) / source["fy"] * z
+        valid = z > 0
+        u = np.rint(x[valid] / z[valid] * target["fx"] + target["ppx"] - 0.5).astype(int)
+        v = np.rint(y[valid] / z[valid] * target["fy"] + target["ppy"] - 0.5).astype(int)
+        inside = (u >= 0) & (u < target["width"]) & (v >= 0) & (v < target["height"])
+        flat = np.full(target["width"] * target["height"], np.iinfo(np.uint16).max, dtype=np.uint16)
+        np.minimum.at(flat, v[inside] * target["width"] + u[inside], depth[valid][inside])
+        flat[flat == np.iinfo(np.uint16).max] = 0
+        aligned = flat.reshape(target["height"], target["width"])
+        return _Composite(
+            _DepthFrame(
+                aligned, target, depth_frame.timestamp_ms,
+                depth_frame._depth_scale, depth_frame._frame_number,
+            ),
+            color_frame,
+        )
         return frames
 
 
@@ -407,7 +484,7 @@ class pointcloud:
         intrin = depth_frame._intrin
         h, w = depth.shape
 
-        z = depth.astype(np.float32) * wire.DEPTH_SCALE
+        z = depth.astype(np.float32) * depth_frame._depth_scale
         # Pixel centres, so a point at the principal point deprojects to
         # exactly (0, 0, z) the way the SDK's rs2_deproject_pixel_to_point does.
         u = np.arange(w, dtype=np.float32) + 0.5

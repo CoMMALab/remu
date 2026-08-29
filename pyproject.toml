@@ -11,6 +11,7 @@ readme = "README.md"
 dependencies = [
     "mujoco>=3.2",
     "numpy>=1.26",
+    "PyYAML>=6.0",
     "robot_descriptions>=1.12",
 ]
 

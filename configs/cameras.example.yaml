@@ -1,0 +1,30 @@
+version: 1
+robot_base_body: fr3_link0
+
+cameras:
+  - vendor: realsense
+    model: d435i
+    serial: "934222071887"
+    # Maps optical-frame points (+x right, +y down, +z forward) into fr3_link0.
+    base_from_optical:
+      - [0.0, 0.242536, -0.970143, 1.0]
+      - [-1.0, 0.0, 0.0, 0.0]
+      - [0.0, 0.970143, 0.242536, 0.6]
+      - [0.0, 0.0, 0.0, 1.0]
+    pipeline:
+      fps: 30
+      color: {width: 640, height: 480, format: rgb8}
+      depth: {width: 640, height: 480, format: z16}
+
+  - vendor: orbbec
+    model: femto_mega
+    serial: "FM000001"
+    base_from_optical:
+      - [0.0, 0.242536, -0.970143, 1.0]
+      - [-1.0, 0.0, 0.0, -0.5]
+      - [0.0, 0.970143, 0.242536, 0.8]
+      - [0.0, 0.0, 0.0, 1.0]
+    pipeline:
+      fps: 30
+      color: {width: 1280, height: 720, format: rgb8}
+      depth: {width: 640, height: 576, format: z16}

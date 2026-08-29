@@ -30,11 +30,11 @@ src/remu/
   protocol/   libfranka wire format: Command enums, message structs, RobotState packing
   sim/        MuJoCo physics backend (MujocoSim) + scene composition (build_scene_xml)
   server/     Arm server (TCP 1337) and Franka Hand server (TCP 1338)
-  camera/     Emulated RealSense D435i: MuJoCo rendering + frame server (TCP 1339)
+  camera/     Configurable RealSense/Femto Mega RGB-D rendering + frame server
   viewer/     MujocoPassiveViewer (native) and ViserViewer (browser, via mjviser)
   cli.py      `remu` command-line entry point
   models/     fr3.urdf served to clients via GetRobotModel
-shim/         pyrealsense2.py -- drop-in SDK replacement for the perception stack
+shim/         Drop-in pyrealsense2 and pyorbbecsdk Python SDK replacements
 scripts/      run_fci_viser.py: the whole stack (physics + FCI + camera + browser)
 tests/        pytest suite (protocol, robot_state, scene, sim, server + camera integration)
 references/   protocol reference material used by the emulator
@@ -58,12 +58,33 @@ remu --no-gripper
 # A different robot MJCF / joint names, or a fully custom scene
 remu --robot-mjcf /path/to/robot.xml --joint-names j1 j2 j3 j4 j5 j6 j7
 remu --scene-mjcf /path/to/complete_scene.xml
+
+# Mixed RealSense and Orbbec cameras declared relative to the robot base
+remu --camera-config configs/cameras.example.yaml
 ```
 
 Then point your libfranka-based controller at IP `127.0.0.1` (the default
 FCI command port 1337 and gripper port 1338 match the real robot) — no code
 changes are needed to switch between `remu` and real hardware. The Franka Hand
 is physics-backed and appears in both the native and Viser viewers by default.
+
+Camera YAML version 1 declares a named MuJoCo robot-base body, any number of
+mixed `realsense/d435i` and `orbbec/femto_mega` devices, a unique serial, a
+`base_from_optical` rigid 4x4 transform, and one RGB-D pipeline per device.
+See [`configs/cameras.example.yaml`](configs/cameras.example.yaml). Color is
+RGB8, depth is Z16, and the streams may have different resolutions but share
+the configured pipeline FPS.
+
+To run unmodified Python camera clients, put `shim/` first on `PYTHONPATH` and
+set `REMU_CAMERA_ADDR` when the server is not at `127.0.0.1:1339`:
+
+```bash
+PYTHONPATH=/path/to/remu/shim python your_realsense_or_orbbec_program.py
+```
+
+The shims target the commonly used RGB-D portions of `pyrealsense2` and the
+Orbbec SDK v2 `pyorbbecsdk` API. They enumerate only their own vendor and
+reject stream profiles that differ from the YAML declaration.
 Its non-blocking command/state handling follows the approach used by
 [franky-sim](https://github.com/TimSchneider42/franky-sim), while its explicit
 gripper backend boundary and protocol-v3 framing also draw from

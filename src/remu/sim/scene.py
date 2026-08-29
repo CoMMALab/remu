@@ -206,8 +206,18 @@ def build_scene_xml(
     ET.SubElement(worldbody, "light", pos="0 0 1.5", dir="0 0 -1", directional="true")
     if add_ground and worldbody.find(".//geom[@name='remu_floor']") is None:
         worldbody.append(ET.fromstring(_GROUND_SNIPPET))
-    for snippet in list(extra_body_xml) + [camera.mjcf_body() for camera in cameras]:
+    for snippet in extra_body_xml:
         worldbody.append(ET.fromstring(snippet))
+    for camera in cameras:
+        parent = worldbody
+        parent_body = getattr(camera, "parent_body", None)
+        if parent_body:
+            parent = worldbody.find(f".//body[@name='{parent_body}']")
+            if parent is None:
+                raise ValueError(
+                    f"camera {camera.serial!r} references missing robot base body {parent_body!r}"
+                )
+        parent.append(ET.fromstring(camera.mjcf_body()))
 
     fd, path = tempfile.mkstemp(prefix="remu_scene_", suffix=".xml")
     with os.fdopen(fd, "wb") as file:

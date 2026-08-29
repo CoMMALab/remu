@@ -3,10 +3,12 @@ step the MuJoCo physics loop in the foreground (with optional rendering).
 """
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
 
+from remu.camera import CAMERA_PORT, CameraServer, cameras_to_calibration, load_camera_config
 from remu.protocol.franka_protocol import COMMAND_PORT
 from remu.protocol.gripper_protocol import GRIPPER_COMMAND_PORT
 from remu.server.franka_server import FrankaFciServer
@@ -54,6 +56,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--viser-port", type=int, default=8080, help="mjviser server port")
     parser.add_argument(
+        "--camera-config", default=None,
+        help="YAML file declaring simulated RealSense and Orbbec RGB-D cameras",
+    )
+    parser.add_argument(
+        "--camera-port", type=int, default=CAMERA_PORT,
+        help="Simulated camera transport port",
+    )
+    parser.add_argument(
+        "--camera-calibration-out", default="calibration.remu.json",
+        help="Ground-truth camera calibration output path",
+    )
+    parser.add_argument(
         "--joint-names",
         nargs=7,
         default=None,
@@ -72,14 +86,18 @@ def main(argv=None):
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    camera_rig = load_camera_config(args.camera_config) if args.camera_config else None
+    cameras = list(camera_rig.cameras) if camera_rig else []
+
     if args.scene_mjcf:
         scene_path = build_scene_xml(
-            robot_mjcf=args.scene_mjcf, add_ground=False, add_gripper=not args.no_gripper
+            robot_mjcf=args.scene_mjcf, add_ground=False, cameras=cameras,
+            add_gripper=not args.no_gripper,
         )
     else:
         scene_path = build_scene_xml(
             robot_mjcf=args.robot_mjcf, extra_object_mjcfs=args.objects,
-            add_gripper=not args.no_gripper,
+            cameras=cameras, add_gripper=not args.no_gripper,
         )
 
     sim = MujocoSim(
@@ -97,6 +115,8 @@ def main(argv=None):
         from remu.viewer.viser_viewer import ViserViewer
 
         viewer = ViserViewer(sim.model, sim.data, port=args.viser_port).attach(sim)
+        for camera in cameras:
+            viewer.add_camera(camera)
 
     server = FrankaFciServer(
         sim,
@@ -110,14 +130,25 @@ def main(argv=None):
         if args.no_gripper
         else FrankaGripperServer(sim, host=args.host, port=args.gripper_port)
     )
+    camera_server = CameraServer(cameras, host=args.host, port=args.camera_port) if cameras else None
     try:
         server.start(background=True)
         if gripper_server is not None:
             gripper_server.start(background=True)
+        if camera_server is not None:
+            camera_server.attach(sim).start(background=True)
+            calibration = cameras_to_calibration(cameras)
+            calibration["robot/base"] = [
+                [1, 0, 0, 0], [0, 1, 0, 0],
+                [0, 0, 1, 0], [0, 0, 0, 1],
+            ]
+            Path(args.camera_calibration_out).write_text(json.dumps(calibration, indent=2))
 
         print(f"remu FCI emulator listening on {args.host}:{server.port}")
         if gripper_server is not None:
             print(f"remu gripper emulator listening on {args.host}:{gripper_server.port}")
+        if camera_server is not None:
+            print(f"remu camera emulator listening on {args.host}:{camera_server.port}")
         print("Point your libfranka client at '127.0.0.1' (or this host's IP) to connect.")
         print("Press Ctrl+C to stop.")
         sim.run()
@@ -127,6 +158,8 @@ def main(argv=None):
         server.stop()
         if gripper_server is not None:
             gripper_server.stop()
+        if camera_server is not None:
+            camera_server.stop()
         sim.stop()
         if viewer is not None:
             viewer.close()

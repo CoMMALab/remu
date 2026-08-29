@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from remu.camera import (  # noqa: E402
     CAMERA_PORT,
     CameraServer,
+    load_camera_config,
     d435i_in_front_of_robot,
     optical_pose_to_calibration,
 )
@@ -77,6 +78,8 @@ def parse_args(argv=None):
     parser.add_argument("--viser-host", default="0.0.0.0", help="mjviser bind host")
     parser.add_argument("--viser-port", type=int, default=8080, help="mjviser server port")
     parser.add_argument("--no-camera", action="store_true", help="Run without the emulated D435i")
+    parser.add_argument("--camera-config", default=None,
+                        help="YAML file declaring RealSense and Orbbec RGB-D cameras")
     parser.add_argument("--camera-port", type=int, default=CAMERA_PORT, help="Camera server TCP port")
     parser.add_argument("--camera-serial", default="934222071887", help="Serial the emulated D435i reports")
     parser.add_argument("--camera-distance", type=float, default=1.0,
@@ -89,13 +92,23 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.camera_config and (
+        args.no_camera or args.camera_serial != "934222071887"
+        or args.camera_distance != 1.0 or args.camera_height != 0.6
+    ):
+        raise SystemExit(
+            "--camera-config cannot be combined with legacy --no-camera/--camera-* placement flags"
+        )
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    cameras = []
-    if not args.no_camera:
+    if args.camera_config:
+        cameras = list(load_camera_config(args.camera_config).cameras)
+    else:
+        cameras = []
+    if not args.camera_config and not args.no_camera:
         cameras.append(d435i_in_front_of_robot(
             serial=args.camera_serial,
             distance_m=args.camera_distance,
@@ -153,7 +166,8 @@ def main(argv=None):
         if gripper_server:
             print(f"  gripper server {args.host}:{gripper_server.port}")
         if camera_server:
-            print(f"  camera server  {args.host}:{camera_server.port}  (serial {args.camera_serial})")
+            identities = ", ".join(f"{camera.vendor}/{camera.serial}" for camera in cameras)
+            print(f"  camera server  {args.host}:{camera_server.port}  ({identities})")
             print(f"  extrinsics     {CALIB_OUT}")
             print(f"  perception     PYTHONPATH={Path(__file__).resolve().parent.parent / 'shim'}")
         print("  Ctrl+C to stop")

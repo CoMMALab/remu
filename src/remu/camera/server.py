@@ -20,8 +20,8 @@ import threading
 import time
 from typing import Dict, List, Optional, Sequence
 
-from .d435i import EmulatedD435i
-from .wire import CAMERA_PORT, DEPTH_SCALE, encode_frame, recv_json, send_json
+from .rgbd import EmulatedRgbdCamera
+from .wire import CAMERA_PORT, encode_frame, recv_json, send_json
 
 logger = logging.getLogger(__name__)
 
@@ -61,19 +61,22 @@ class _LatestFrame:
 
 
 class CameraServer:
-    """Serves one or more :class:`EmulatedD435i` over TCP."""
+    """Serves one or more vendor-neutral emulated RGB-D cameras over TCP."""
 
     def __init__(
         self,
-        cameras: Sequence[EmulatedD435i],
+        cameras: Sequence[EmulatedRgbdCamera],
         host: str = "0.0.0.0",
         port: int = CAMERA_PORT,
     ):
-        self.cameras: List[EmulatedD435i] = list(cameras)
+        self.cameras: List[EmulatedRgbdCamera] = list(cameras)
+        serials = [camera.serial for camera in self.cameras]
+        if len(set(serials)) != len(serials):
+            raise ValueError("camera serials must be globally unique across vendors")
         self.host = host
         self.port = port
 
-        self._by_serial: Dict[str, EmulatedD435i] = {c.serial: c for c in self.cameras}
+        self._by_serial: Dict[str, EmulatedRgbdCamera] = {c.serial: c for c in self.cameras}
         self._frames: Dict[str, _LatestFrame] = {c.serial: _LatestFrame() for c in self.cameras}
         self._last_render: Dict[str, float] = {c.serial: 0.0 for c in self.cameras}
 
@@ -106,17 +109,20 @@ class CameraServer:
                 self.last_render_error = exc
                 logger.exception("camera %s render failed", cam.serial)
 
-    def _render_one(self, cam: EmulatedD435i, model, data) -> None:
+    def _render_one(self, cam: EmulatedRgbdCamera, model, data) -> None:
         color, depth = cam.render(model, data)
         color_bytes = color.tobytes()
         depth_bytes = depth.tobytes()
         header = {
+            "protocol_version": 2,
+            "vendor": cam.vendor,
+            "model": cam.model,
             "serial": cam.serial,
-            "width": cam.width,
-            "height": cam.height,
+            "frame_number": self._frames[cam.serial].frame_id + 1,
             "timestamp_ms": time.time() * 1000.0,
-            "depth_scale": DEPTH_SCALE,
-            "intrinsics": cam.intrinsics.to_dict(),
+            "depth_scale": cam.depth_scale,
+            "color": cam.color_profile.to_dict(),
+            "depth": cam.depth_profile.to_dict(),
             "color_bytes": len(color_bytes),
             "depth_bytes": len(depth_bytes),
         }
@@ -160,13 +166,14 @@ class CameraServer:
             request = recv_json(client)
             op = request.get("op")
             if op == "list_devices":
+                vendor = request.get("vendor")
                 send_json(client, {"devices": [
-                    {"serial": c.serial, "name": "Intel RealSense D435I",
-                     "width": c.width, "height": c.height, "fps": c.fps}
+                    c.device_dict()
                     for c in self.cameras
+                    if vendor is None or c.vendor == vendor
                 ]})
             elif op == "stream":
-                self._stream(client, request.get("serial"))
+                self._stream(client, request)
             else:
                 send_json(client, {"error": f"unknown op {op!r}"})
         except (ConnectionError, OSError) as e:
@@ -176,17 +183,41 @@ class CameraServer:
         finally:
             client.close()
 
-    def _stream(self, client: socket.socket, serial: Optional[str]) -> None:
+    def _stream(self, client: socket.socket, request: dict) -> None:
         # A stream request with no serial means "whichever camera you have",
         # matching pyrealsense2's behaviour when config.enable_device is never
         # called. It is only unambiguous with exactly one camera.
-        if serial is None and len(self.cameras) == 1:
-            serial = self.cameras[0].serial
+        serial = request.get("serial")
+        vendor = request.get("vendor")
+        candidates = [c for c in self.cameras if vendor is None or c.vendor == vendor]
+        if serial is None and len(candidates) == 1:
+            serial = candidates[0].serial
         if serial not in self._by_serial:
             send_json(client, {"error": f"no such device {serial!r}"})
             return
 
-        send_json(client, {"ok": True})
+        camera = self._by_serial[serial]
+        if vendor is not None and camera.vendor != vendor:
+            send_json(client, {"error": f"no such {vendor} device {serial!r}"})
+            return
+        for stream_request in request.get("streams", []):
+            kind = stream_request.get("stream")
+            profile = getattr(camera, f"{kind}_profile", None)
+            if profile is None:
+                send_json(client, {"error": f"unsupported stream {kind!r}"})
+                return
+            expected = (profile.width, profile.height, profile.format, camera.fps)
+            actual = (
+                stream_request.get("width"), stream_request.get("height"),
+                stream_request.get("format"), stream_request.get("fps"),
+            )
+            if any(value is not None and value != wanted for value, wanted in zip(actual, expected)):
+                send_json(client, {
+                    "error": f"profile {kind} {actual} is not configured; expected {expected}"
+                })
+                return
+
+        send_json(client, {"ok": True, "device": camera.device_dict()})
         mailbox = self._frames[serial]
         last_seen = 0
         while self.running:
