@@ -43,14 +43,14 @@ references/   protocol reference material used by the emulator
 ## Usage
 
 ```bash
-# Native MuJoCo viewer (default)
+# Headless physics + FCI server (default)
 remu
 
 # Browser-based viewer via mjviser
 remu --viewer viser --viser-port 8080
 
-# No rendering, just the physics + FCI server
-remu --viewer none
+# Native MuJoCo viewer
+remu --viewer mujoco
 
 # Arm-only operation, for a custom model without conventional hand attachment names
 remu --no-gripper
