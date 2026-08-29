@@ -1,0 +1,86 @@
+<mujoco model="table_environment">
+  <asset>
+    <!-- The STL was exported in millimetres; MuJoCo uses metres. -->
+    <!-- MuJoCo limits STL assets to 200,000 faces, so the visual mesh is
+         losslessly divided into three pieces. -->
+    <mesh
+      name="table_visual_mesh_1"
+      file="/Users/joey/Projects/remu/table_lowres_1.stl"
+      scale="0.001 0.001 0.001"
+      maxhullvert="64"/>
+    <mesh
+      name="table_visual_mesh_2"
+      file="/Users/joey/Projects/remu/table_lowres_2.stl"
+      scale="0.001 0.001 0.001"
+      maxhullvert="64"/>
+    <mesh
+      name="table_visual_mesh_3"
+      file="/Users/joey/Projects/remu/table_lowres_3.stl"
+      scale="0.001 0.001 0.001"
+      maxhullvert="64"/>
+
+    <!-- #095859, with PBR and native-renderer settings for anodized aluminum. -->
+    <material
+      name="anodized_aluminum"
+      rgba="0.035294 0.345098 0.349020 1"
+      metallic="1"
+      roughness="0.28"
+      specular="0.8"
+      shininess="0.65"/>
+  </asset>
+
+  <worldbody>
+    <!-- +90 degrees about Z: counterclockwise when viewed from above. -->
+    <body name="table_environment_frame" quat="0.707106781 0 0 0.707106781">
+      <!-- Keep the authored STL origin coincident with the robot/world origin. -->
+      <geom
+        name="table_visual_1"
+        type="mesh"
+        mesh="table_visual_mesh_1"
+        material="anodized_aluminum"
+        pos="0 0 0"
+        quat="1 0 0 0"
+        contype="0"
+        conaffinity="0"
+        group="2"/>
+      <geom
+        name="table_visual_2"
+        type="mesh"
+        mesh="table_visual_mesh_2"
+        material="anodized_aluminum"
+        pos="0 0 0"
+        quat="1 0 0 0"
+        contype="0"
+        conaffinity="0"
+        group="2"/>
+      <geom
+        name="table_visual_3"
+        type="mesh"
+        mesh="table_visual_mesh_3"
+        material="anodized_aluminum"
+        pos="0 0 0"
+        quat="1 0 0 0"
+        contype="0"
+        conaffinity="0"
+        group="2"/>
+
+    <!--
+      Collision bounds:
+        min = (-0.9440, -0.1769, -0.0310)
+        max = ( 0.9450,  0.9091,  0.0000)
+
+      MuJoCo box size values are half-extents.
+    -->
+      <geom
+        name="table_collision"
+        type="box"
+        pos="0.0005 0.3661 -0.0155"
+        size="0.9445 0.5430 0.0155"
+        contype="1"
+        conaffinity="1"
+        friction="0.8 0.02 0.002"
+        rgba="0 0 0 0"
+        group="3"/>
+    </body>
+  </worldbody>
+</mujoco>
