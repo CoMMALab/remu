@@ -43,14 +43,17 @@ references/   protocol reference material used by the emulator
 ## Usage
 
 ```bash
-# Headless physics + FCI server (default)
+# Browser-based viewer via mjviser (default)
 remu
 
-# Browser-based viewer via mjviser
+# Browser-based viewer on a custom port
 remu --viewer viser --viser-port 8080
 
+# No viewer, just the physics + FCI server
+remu --viewer none
+
 # Native MuJoCo viewer
-remu --viewer mujoco
+MUJOCO_GL=glfw remu --viewer mujoco
 
 # Arm-only operation, for a custom model without conventional hand attachment names
 remu --no-gripper
@@ -128,9 +131,10 @@ deadlines, state validity, and clean thread shutdown.
   applies control uniformly as a joint torque (`qfrc_applied`) computed from
   whichever mode is active, so behavior doesn't depend on what actuators the
   source MJCF happens to define.
-- Offscreen camera rendering needs a GL platform. On a headless machine set
-  `MUJOCO_GL=egl`; without it MuJoCo tries GLFW and fails on the missing
-  `$DISPLAY`. Each `mujoco.Renderer` owns a GL context bound to the thread
-  that created it, so cameras are bound lazily on the physics thread — never
-  call `EmulatedD435i.bind()` from anywhere else, or every later render fails
-  with `EGL_BAD_ACCESS`.
+- Remu defaults `MUJOCO_GL` to `egl`, so offscreen camera rendering works on a
+  headless machine without `$DISPLAY`. An explicitly configured backend is
+  preserved; for example, use `MUJOCO_GL=glfw remu --viewer mujoco` for the
+  native desktop viewer. Each `mujoco.Renderer` owns a GL context bound to the
+  thread that created it, so cameras are bound lazily on the physics thread —
+  never call `EmulatedD435i.bind()` from anywhere else, or every later render
+  fails with `EGL_BAD_ACCESS`.
