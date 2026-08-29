@@ -20,6 +20,13 @@ ARCH_ARM = 2
 ARCH_ARM64 = 3
 
 _SOURCE = Path(__file__).resolve().parent.parent / "models" / "fr3_kinematics.c"
+_PREBUILT_LIBRARIES = {
+    (SYSTEM_LINUX, ARCH_ARM64): (
+        Path(__file__).resolve().parent.parent
+        / "models"
+        / "libfcimodels-remu-linux-arm64.so"
+    ),
+}
 _ARCHITECTURES = {
     "x86_64": ARCH_X64,
     "amd64": ARCH_X64,
@@ -97,10 +104,16 @@ def model_library_bytes(
             raise ModelLibraryUnavailable(f"model library not found: {path}")
         return path.read_bytes()
 
+    prebuilt = _PREBUILT_LIBRARIES.get((system, architecture))
+    if prebuilt is not None:
+        if not prebuilt.is_file():
+            raise ModelLibraryUnavailable(f"bundled model library not found: {prebuilt}")
+        return prebuilt.read_bytes()
+
     native_architecture = _native_linux_architecture()
     if system != SYSTEM_LINUX or native_architecture != architecture:
         raise ModelLibraryUnavailable(
-            "built-in model library generation supports native Linux clients only; "
-            "pass --model-library with a binary for the requested platform"
+            "no built-in model library is available for the requested platform; "
+            "pass --model-library with a compatible binary"
         )
     return _compile_native_library().read_bytes()

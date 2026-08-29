@@ -91,10 +91,11 @@ gripper backend boundary and protocol-v3 framing also draw from
 [libfranka-sim](https://github.com/BarisYazici/libfranka-sim).
 
 Unmodified libfranka 0.15 clients may call `Robot::loadModel()`. Remu handles
-the corresponding v9 `LoadModelLibrary` command by compiling a small native
-FR3 kinematics library on first request. This supports a Linux client with the
-same architecture as the remu host and requires `cc` (for example the compiler
-from `build-essential`). For a remote client with a different architecture,
+the corresponding v9 `LoadModelLibrary` command by selecting a library for the
+platform reported by the client. A Linux ARM64 library is bundled. For a Linux
+client with the same architecture as the remu host, Remu can also compile a
+small native FR3 kinematics library on first request; this requires `cc` (for
+example the compiler from `build-essential`). For any other remote platform,
 provide a compatible prebuilt library with `--model-library PATH` or the
 `REMU_MODEL_LIBRARY` environment variable.
 

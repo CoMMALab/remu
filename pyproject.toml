@@ -26,7 +26,7 @@ remu = "remu.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-remu = ["models/*.urdf", "models/*.c"]
+remu = ["models/*.urdf", "models/*.c", "models/*.so"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
