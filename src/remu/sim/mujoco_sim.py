@@ -94,7 +94,12 @@ class MujocoSim:
         self.torque_limits = np.asarray(
             torque_limits if torque_limits is not None else DEFAULT_TORQUE_LIMITS, dtype=float
         )
+        self._home_q_explicit = home_q is not None
         self.home_q = np.asarray(home_q if home_q is not None else DEFAULT_HOME_Q, dtype=float)
+        if self.home_q.shape != (7,) or not np.all(np.isfinite(self.home_q)):
+            raise ValueError("home_q must contain exactly 7 finite joint positions")
+        if np.any(self.home_q < FR3_Q_MIN) or np.any(self.home_q > FR3_Q_MAX):
+            raise ValueError("home_q must lie within the FR3 joint position limits")
         self.realtime = realtime
         self.enable_gripper = enable_gripper
         self.finger_joint_names = list(finger_joint_names or DEFAULT_FINGER_JOINT_NAMES)
@@ -219,14 +224,17 @@ class MujocoSim:
         body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, flange_name)
         self._ee_body_id = body_id if body_id >= 0 else self.model.nbody - 1
 
-        # Try the "home" keyframe if present, else fall back to home_q.
+        # An explicitly configured start pose wins over the model's keyframe.
+        # Without one, preserve the historical behaviour of using the arm
+        # portion of the "home" keyframe when it exists.
         key_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_KEY, "home")
-        if key_id >= 0:
+        if key_id >= 0 and not self._home_q_explicit:
             self.data.qpos[self._qpos_adr] = self.model.key_qpos[key_id][self._qpos_adr]
             self.home_q = self.data.qpos[self._qpos_adr].copy()
             self.latest_joint_positions = self.home_q.copy()
         else:
             self.data.qpos[self._qpos_adr] = self.home_q
+            self.latest_joint_positions = self.home_q.copy()
 
         if self.enable_gripper:
             self.data.qpos[self._finger_qpos_adr] = FRANKA_HAND_MAX_WIDTH / 2.0
@@ -479,10 +487,15 @@ class MujocoSim:
         if self.enable_gripper:
             finger_q = self.data.qpos[self._finger_qpos_adr].copy()
             finger_dq = self.data.qvel[self._finger_dof_adr].copy()
+            width = float(np.clip(finger_q.sum(), 0.0, FRANKA_HAND_MAX_WIDTH))
+            # Avoid exposing sub-micron solver drift as a partially closed
+            # hand immediately after startup.
+            if abs(width - FRANKA_HAND_MAX_WIDTH) < 1e-6:
+                width = FRANKA_HAND_MAX_WIDTH
             self._finger_state_snapshot = {
                 "q": finger_q,
                 "dq": finger_dq,
-                "width": float(finger_q.sum()),
+                "width": width,
                 "contact_body_ids": self._finger_contacts(),
             }
 

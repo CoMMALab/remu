@@ -14,7 +14,7 @@ from .rgbd import EmulatedRgbdCamera, StreamProfile
 
 @dataclass(frozen=True)
 class CameraRigConfig:
-    robot_base_body: str
+    robot_base_body: str | None
     cameras: tuple[EmulatedRgbdCamera, ...]
 
 
@@ -88,8 +88,8 @@ def parse_camera_config(value: dict) -> CameraRigConfig:
     if root.get("version") != 1:
         raise ValueError("camera config version must be 1")
     base_body = root.get("robot_base_body")
-    if not isinstance(base_body, str) or not base_body:
-        raise ValueError("robot_base_body must be a non-empty MuJoCo body name")
+    if base_body is not None and (not isinstance(base_body, str) or not base_body):
+        raise ValueError("robot_base_body must be a non-empty MuJoCo body name when provided")
     entries = root.get("cameras")
     if not isinstance(entries, list) or not entries:
         raise ValueError("cameras must be a non-empty list")
@@ -113,6 +113,11 @@ def parse_camera_config(value: dict) -> CameraRigConfig:
         if identity in identities:
             raise ValueError(f"duplicate camera serial {serial}")
         identities.add(identity)
+        parent_body = entry.get("parent_body", base_body)
+        if not isinstance(parent_body, str) or not parent_body:
+            raise ValueError(
+                f"{where}.parent_body is required when robot_base_body is not configured"
+            )
 
         pipeline = _mapping(entry.get("pipeline"), f"{where}.pipeline")
         fps = _positive_int(pipeline.get("fps"), f"{where}.pipeline.fps")
@@ -137,7 +142,7 @@ def parse_camera_config(value: dict) -> CameraRigConfig:
             color=color,
             depth=depth,
             fps=fps,
-            parent_body=base_body,
+            parent_body=parent_body,
             min_depth_m=descriptor["min_depth"],
             max_depth_m=descriptor["max_depth"],
         ))

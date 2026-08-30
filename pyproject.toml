@@ -12,6 +12,8 @@ dependencies = [
     "mujoco>=3.2",
     "numpy>=1.26",
     "PyYAML>=6.0",
+    "h5py>=3.10",
+    "Pillow>=10",
     "robot_descriptions>=1.12",
 ]
 
@@ -21,6 +23,7 @@ dev = ["pytest", "pytest-timeout"]
 
 [project.scripts]
 remu = "remu.cli:main"
+remu-export-fr3-teleop = "remu.fr3_teleop:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -19,7 +19,7 @@ import struct
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from remu.protocol.franka_protocol import (
     COMMAND_PORT,
@@ -66,8 +66,12 @@ class FrankaFciServer:
         port: int = COMMAND_PORT,
         urdf_path: Optional[Path] = None,
         model_library_path: Optional[Path] = None,
+        on_session_start: Optional[Callable[[], None]] = None,
+        on_session_end: Optional[Callable[[], None]] = None,
     ):
         self.sim = sim
+        self.on_session_start = on_session_start
+        self.on_session_end = on_session_end
         self.host = host
         self.port = port
         self.library_version = PROTOCOL_VERSION
@@ -292,12 +296,14 @@ class FrankaFciServer:
 
     # -- UDP command channel (motion generator / controller commands) ----
     def _handle_udp_commands(self):
+        udp_socket = self.udp_socket
+        if udp_socket is None:
+            return
         poller = select.poll()
-        poller.register(self.udp_socket.fileno(), select.POLLIN)
+        poller.register(udp_socket.fileno(), select.POLLIN)
 
         while self.running and self.connection_running:
-            udp_socket = self.udp_socket
-            if udp_socket is None:
+            if udp_socket._closed:
                 break
             if not poller.poll(1):
                 continue
@@ -425,6 +431,7 @@ class FrankaFciServer:
 
     # -- client connection lifecycle ---------------------------------------
     def _handle_client(self, client_socket):
+        session_started = False
         try:
             self.reset_state()
             self.client_socket = client_socket
@@ -453,6 +460,10 @@ class FrankaFciServer:
                 )
                 return
 
+            session_started = True
+            if self.on_session_start is not None:
+                self.on_session_start()
+
             tcp_thread = threading.Thread(target=self._handle_tcp_messages, args=(client_socket,), daemon=True)
             tcp_thread.start()
             self._threads.append(tcp_thread)
@@ -468,6 +479,11 @@ class FrankaFciServer:
             logger.exception("Error handling client")
         finally:
             client_socket.close()
+            if session_started and self.on_session_end is not None:
+                try:
+                    self.on_session_end()
+                except Exception:
+                    logger.exception("FCI session-end callback failed")
             self.reset_state()
 
     def _accept_loop(self):
@@ -495,6 +511,10 @@ class FrankaFciServer:
                 self._handle_client(client_socket)
             except socket.timeout:
                 continue
+            except OSError:
+                if not self.running:
+                    break
+                logger.exception("Connection handling error")
             except Exception:
                 logger.exception("Connection handling error")
                 continue

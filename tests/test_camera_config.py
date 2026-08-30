@@ -40,6 +40,16 @@ def test_mixed_camera_config_builds_model_specific_devices():
     assert rig.cameras[1].depth_profile.fovy_deg == 120.0
     assert rig.cameras[1].parent_body == "fr3_link0"
 
+def test_each_camera_can_override_the_rig_parent_body():
+    value = _config()
+    value["cameras"][0]["parent_body"] = "fr3_hand"
+    value["cameras"][1]["parent_body"] = "fr3_link7"
+
+    rig = parse_camera_config(value)
+
+    assert [camera.parent_body for camera in rig.cameras] == ["fr3_hand", "fr3_link7"]
+
+
 
 @pytest.mark.parametrize("mutation, match", [
     (lambda value: value.update(version=2), "version"),

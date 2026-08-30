@@ -71,24 +71,63 @@ FCI command port 1337 and gripper port 1338 match the real robot) — no code
 changes are needed to switch between `remu` and real hardware. The Franka Hand
 is physics-backed and appears in both the native and Viser viewers by default.
 
-Camera YAML version 1 declares a named MuJoCo robot-base body, any number of
-mixed `realsense/d435i` and `orbbec/femto_mega` devices, a unique serial, a
-`base_from_optical` rigid 4x4 transform, and one RGB-D pipeline per device.
-See [`configs/cameras.example.yaml`](configs/cameras.example.yaml). Color is
-RGB8, depth is Z16, and the streams may have different resolutions but share
-the configured pipeline FPS.
+## Camera configuration
 
-To run unmodified Python camera clients, put `shim/` first on `PYTHONPATH` and
-set `REMU_CAMERA_ADDR` when the server is not at `127.0.0.1:1339`:
+Camera YAML version 1 declares any number of mixed `realsense/d435i` and
+`orbbec/femto_mega` devices. It can be supplied by `--camera-config`, or placed
+under `camera_rig` in the unified run configuration. See
+[`configs/cameras.example.yaml`](configs/cameras.example.yaml) and the
+end-effector-mounted example in
+[`configs/ephemeral_ee_camera.yaml`](configs/ephemeral_ee_camera.yaml).
+
+Each camera entry has:
+
+- `vendor`, `model`, and a globally unique `serial`.
+- `parent_body`, the MuJoCo body/link that carries this camera. If omitted, it
+  inherits the rig-level `robot_base_body`. Different cameras may name
+  different links, such as `fr3_link0`, `fr3_link7`, or `fr3_hand`.
+- `base_from_optical`, a rigid 4x4 transform from the camera optical frame into
+  `parent_body`. Optical coordinates follow the SDK convention: +x right, +y
+  down, and +z forward. Despite the historical field name, this transform is
+  relative to `parent_body`, not necessarily the robot base.
+- One `pipeline` FPS and color/depth stream descriptions. Color is `rgb8`,
+  depth is `z16`; the two streams may use different resolutions.
+
+The named parent body must exist in the composed MuJoCo scene. A bad name is
+rejected while building the scene rather than silently placing the camera in
+world coordinates. Cameras attached to moving links follow those links during
+both persistent simulation and ephemeral replay.
+
+## Camera SDK shims
+
+Persistent mode exposes the configured cameras over Remu's TCP camera service
+(port 1339 by default). The files in `shim/` are drop-in, pure-Python subsets
+of `pyrealsense2` and the Orbbec SDK v2 `pyorbbecsdk` module. Put `shim/`
+first on `PYTHONPATH`; client imports then resolve to the shim without changing
+the perception application:
 
 ```bash
-PYTHONPATH=/path/to/remu/shim python your_realsense_or_orbbec_program.py
+# Camera server on the same host, default port.
+PYTHONPATH=/path/to/remu/shim python your_camera_program.py
+
+# Camera server on another host or port.
+REMU_CAMERA_ADDR=remu-host:1339 \
+  PYTHONPATH=/path/to/remu/shim python your_camera_program.py
 ```
 
-The shims target the commonly used RGB-D portions of `pyrealsense2` and the
-Orbbec SDK v2 `pyorbbecsdk` API. They enumerate only their own vendor and
-reject stream profiles that differ from the YAML declaration.
-Its non-blocking command/state handling follows the approach used by
+The shim asks the server to enumerate devices, validates requested profiles
+against the YAML, and streams aligned RGB/depth arrays plus intrinsics and
+timestamps. Each shim enumerates only its own vendor. RealSense decimation and
+threshold filters are implemented; disparity, spatial, temporal, and
+hole-filling filters are intentional identity passes because rendered depth
+does not contain the sensor noise those filters remove. This is a compatibility
+surface for the APIs used by the perception stack, not a complete vendor SDK.
+
+Ephemeral mode does not start the camera service or use the shims: it records
+physics first and writes camera arrays directly into the final dataset during
+offline rendering.
+
+Remu's non-blocking command/state handling follows the approach used by
 [franky-sim](https://github.com/TimSchneider42/franky-sim), while its explicit
 gripper backend boundary and protocol-v3 framing also draw from
 [libfranka-sim](https://github.com/BarisYazici/libfranka-sim).
@@ -101,6 +140,81 @@ small native FR3 kinematics library on first request; this requires `cc` (for
 example the compiler from `build-essential`). For any other remote platform,
 provide a compatible prebuilt library with `--model-library PATH` or the
 `REMU_MODEL_LIBRARY` environment variable.
+
+## Ephemeral capture and offline rendering
+
+Ephemeral mode is a one-client, quick-setup/quick-teardown path. It starts the
+FCI and optional gripper servers, waits for the first successful FCI session,
+records that session, renders it after disconnect, writes one dataset, and
+exits. Persistent mode remains the default when `mode` is omitted.
+
+During FCI execution, Remu records the complete MuJoCo `qpos` and `qvel` at
+every physics tick—not only the seven arm joints—along with `data.time`. No
+viewer or camera renderer runs in this phase, so a 1 kHz control loop does not
+also pay for perception rendering. `viewer.backend` must therefore be `none`.
+
+After the FCI client disconnects, Remu:
+
+1. Selects the first logged physics state at or after each camera's exact frame
+   boundary. Cameras with different FPS values get independent schedules.
+2. Splits the union of those trajectory indices into contiguous chunks.
+3. Starts up to `render_workers` processes. Each process loads its own MuJoCo
+   model and GL/EGL context once, restores `qpos` and `qvel` for each selected
+   state, calls `mj_forward`, and renders without stepping physics or pacing to
+   wall clock.
+4. Writes one HDF5 shard per worker and merges shards by original frame index,
+   validating coverage, ordering, and timestamps before atomically promoting
+   the partial capture to the requested output path.
+
+```bash
+remu --config configs/ephemeral_ee_camera.yaml
+
+# Explicit CLI values override their YAML counterparts.
+remu --config run.yaml --initial-q Q1 Q2 Q3 Q4 Q5 Q6 Q7 \
+  --render-workers 2 --output datasets/run.h5 --overwrite
+```
+
+The unified version-1 YAML groups settings under `robot`, `simulation`,
+`network`, `viewer`, `camera_rig`, and `ephemeral`. Relative paths resolve
+against the configuration file. `robot.initial_q` is the seven-joint starting
+configuration and overrides a model's `home` keyframe. The complete executable
+example is
+[`configs/ephemeral_ee_camera.yaml`](configs/ephemeral_ee_camera.yaml).
+
+The resulting HDF5 layout is:
+
+```text
+/trajectory/time_s                 float64 [ticks]
+/trajectory/qpos                   float64 [ticks, model.nq]
+/trajectory/qvel                   float64 [ticks, model.nv]
+/cameras/<vendor>/<serial>/color  uint8   [frames, H, W, 3]
+/cameras/<vendor>/<serial>/depth  uint16  [frames, H, W]
+                                 /time_s, /scheduled_time_s,
+                                 /trajectory_index, /base_from_optical
+```
+
+File attributes include the resolved run configuration, composed scene MJCF,
+physics timestep, worker count, render timing, and format version. If capture
+or rendering fails, the `.partial.h5` trajectory is retained for diagnosis;
+the final output is only replaced after a successful merge. Existing partial or
+final outputs require `--overwrite`.
+
+`render_workers` defaults to one because EGL context contention is hardware
+dependent. Benchmark the same workload at 1, 2, 4, and so on before choosing a
+larger default for a machine; throughput often stops scaling before the CPU
+core count because workers contend for GPU resources.
+
+To replay one of these files with fr3-teleop's existing Rerun visualizer,
+convert it to that project's staged episode layout:
+
+```bash
+remu-export-fr3-teleop datasets/run.h5 datasets/run-rerun
+fr3-teleop replay datasets/run-rerun --serve
+```
+
+The export preserves the full measured arm/gripper timeline and color frames.
+Depth remains losslessly available in the source HDF5 file; the current
+fr3-teleop staging format consumes the color stream.
 
 ## FR3 command limits
 

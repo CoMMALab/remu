@@ -18,6 +18,15 @@ def test_build_publishes_initial_state_near_home(sim):
     assert np.allclose(state["q"], sim.home_q, atol=1e-6)
     assert np.allclose(state["dq"], 0.0, atol=1e-6)
 
+def test_explicit_home_q_overrides_the_model_keyframe(scene_path):
+    configured = np.array([0.1, -0.2, 0.05, -2.4, 0.1, 2.2, 0.7])
+    custom = sim_module.MujocoSim(scene_path, realtime=False, home_q=configured)
+    custom.build()
+
+    assert np.allclose(custom.home_q, configured)
+    assert np.allclose(custom.get_robot_state()["q"], configured)
+
+
 
 def test_none_mode_holds_position_under_gravity(sim):
     q0 = sim.get_robot_state()["q"].copy()

@@ -1,0 +1,49 @@
+version: 1
+mode: ephemeral
+
+robot:
+  gripper: true
+  initial_q:
+    - -0.0001305661606154118
+    - -0.17083620561307536
+    - -0.024106275427977056
+    - -2.4525674388386953
+    - -0.00612139682158199
+    - 2.2259022374621193
+    - 0.7677453302367606
+
+simulation:
+  dt: 0.001
+
+network:
+  host: 0.0.0.0
+  fci_port: 1337
+  gripper_port: 1338
+  camera_port: 1339
+
+viewer:
+  backend: none
+  viser_port: 8080
+
+# ee_T_cam is expressed from the Franka Hand/end-effector body into the
+# camera optical frame (+x right, +y down, +z forward).
+camera_rig:
+  cameras:
+    - vendor: realsense
+      model: d435i
+      serial: "ee-d435i-001"
+      parent_body: fr3_hand
+      base_from_optical:
+        - [-0.01991022, -0.99655808, -0.08047104, 0.05738402]
+        - [ 0.99961754, -0.01829690, -0.02073646, 0.01802782]
+        - [ 0.01919272, -0.08085313,  0.99654122, -0.05768520]
+        - [ 0.00000000,  0.00000000,  0.00000000, 1.00000000]
+      pipeline:
+        fps: 30
+        color: {width: 640, height: 480, format: rgb8}
+        depth: {width: 640, height: 480, format: z16}
+
+ephemeral:
+  output: ../datasets/libero_spatial_task0_seed1000_ee_d435i.h5
+  render_workers: 1
+  overwrite: false

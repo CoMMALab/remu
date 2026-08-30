@@ -5,6 +5,8 @@ cameras:
   - vendor: realsense
     model: d435i
     serial: "934222071887"
+    # Optional per-camera override; otherwise robot_base_body above is used.
+    parent_body: fr3_link0
     # Maps optical-frame points (+x right, +y down, +z forward) into fr3_link0.
     base_from_optical:
       - [0.0, 0.242536, -0.970143, 1.0]
