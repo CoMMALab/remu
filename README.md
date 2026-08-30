@@ -141,81 +141,130 @@ example the compiler from `build-essential`). For any other remote platform,
 provide a compatible prebuilt library with `--model-library PATH` or the
 `REMU_MODEL_LIBRARY` environment variable.
 
+## Persistent MCAP recording
+
+Persistent mode records to one canonical MCAP when `--record` or
+`recording.path` is configured. File I/O and Protobuf serialization happen on
+one background writer; physics and network threads enqueue decoded messages.
+
+```bash
+remu --record datasets/run.mcap --record-level standard
+
+# The same settings in unified YAML:
+# recording:
+#   path: datasets/run.mcap
+#   level: standard
+#   chunk_mib: 4
+#   rotate_seconds: 1800
+#   rotate_mib: 4096
+```
+
+MCAP chunks use Zstandard compression and are flushed at the configured bounded
+chunk size. Rotation may be disabled with zero or enabled by simulation duration
+and/or approximate file size. The first segment uses the requested name and
+later segments use `.0001.mcap`, `.0002.mcap`, and so on. Configuration,
+composed scene MJCF, camera calibration, and model dimensions/joint names are
+stored as metadata and attachments in every segment.
+
+Recording levels are:
+
+- `minimal`: authoritative full-model physics snapshots and lifecycle events.
+- `standard`: minimal plus decoded FCI commands/states, gripper commands/states,
+  and camera color/depth.
+- `debug`: standard plus raw FCI and gripper TCP/UDP packets.
+
+Decoded numeric streams are never silently dropped: exhausting their bounded
+queue fails the recording. Persistent RGB-D pairs use one atomic queue item and
+may be dropped together if the writer cannot keep up; a lifecycle event records
+the total. This prevents recording backpressure from stalling the 1 kHz physics
+loop or leaving an unmatched color/depth half-frame.
+
+The canonical topics are:
+
+```text
+/remu/sim/state
+/remu/fci/command
+/remu/fci/state
+/remu/gripper/command
+/remu/gripper/state
+/remu/camera/<vendor>/<serial>/color
+/remu/camera/<vendor>/<serial>/depth
+/remu/events
+/remu/debug/raw                         # debug level only
+```
+
+Messages use the versioned Protobuf schema in
+[`src/remu/proto/recording.proto`](src/remu/proto/recording.proto). Physics
+snapshots contain complete MuJoCo `qpos` and `qvel`, so manipulated objects
+and free joints remain authoritative for deterministic visual replay.
+
 ## Ephemeral capture and offline rendering
 
 Ephemeral mode is a one-client, quick-setup/quick-teardown path. It starts the
-FCI and optional gripper servers, waits for the first successful FCI session,
-records that session, renders it after disconnect, writes one dataset, and
-exits. Persistent mode remains the default when `mode` is omitted.
+FCI and optional gripper servers, waits for one successful FCI session, records
+that session to `run.capture.mcap`, renders after disconnect, writes one final
+MCAP, and exits. Persistent mode remains the default when `mode` is omitted.
 
-During FCI execution, Remu records the complete MuJoCo `qpos` and `qvel` at
-every physics tick—not only the seven arm joints—along with `data.time`. No
-viewer or camera renderer runs in this phase, so a 1 kHz control loop does not
-also pay for perception rendering. `viewer.backend` must therefore be `none`.
+During FCI execution, Remu records complete MuJoCo `qpos` and `qvel` at every
+physics tick along with decoded commands, desired state, gripper state, and
+events. No viewer or camera renderer runs in this phase, so a 1 kHz control loop
+does not also pay for perception rendering. `viewer.backend` must be `none`.
 
 After the FCI client disconnects, Remu:
 
 1. Selects the first logged physics state at or after each camera's exact frame
    boundary. Cameras with different FPS values get independent schedules.
-2. Splits the union of those trajectory indices into contiguous chunks.
-3. Starts up to `render_workers` processes. Each process loads its own MuJoCo
-   model and GL/EGL context once, restores `qpos` and `qvel` for each selected
-   state, calls `mj_forward`, and renders without stepping physics or pacing to
-   wall clock.
-4. Writes one HDF5 shard per worker and merges shards by original frame index,
-   validating coverage, ordering, and timestamps before atomically promoting
-   the partial capture to the requested output path.
+2. Splits the union of selected trajectory indices into contiguous chunks.
+3. Starts up to `render_workers` processes. Each loads its own MuJoCo model and
+   EGL context once, restores `qpos` and `qvel`, calls `mj_forward`, and
+   renders without physics integration or wall-clock pacing.
+4. Writes `worker-000.mcap`, `worker-001.mcap`, and so on, containing
+   lossless PNG RGB and 16-bit depth frames.
+5. Streaming-merges capture and worker messages by simulation timestamp,
+   channel priority, and frame index, then atomically promotes the merged file
+   to the requested output.
 
 ```bash
 remu --config configs/ephemeral_ee_camera.yaml
 
-# Explicit CLI values override their YAML counterparts.
+# Explicit CLI values override YAML.
 remu --config run.yaml --initial-q Q1 Q2 Q3 Q4 Q5 Q6 Q7 \
-  --render-workers 2 --output datasets/run.h5 --overwrite
+  --render-workers 2 --output datasets/run.mcap --overwrite
 ```
 
 The unified version-1 YAML groups settings under `robot`, `simulation`,
-`network`, `viewer`, `camera_rig`, and `ephemeral`. Relative paths resolve
-against the configuration file. `robot.initial_q` is the seven-joint starting
-configuration and overrides a model's `home` keyframe. The complete executable
-example is
+`network`, `viewer`, `camera_rig`, `recording`, and `ephemeral`.
+Relative paths resolve against the configuration file. `robot.initial_q`
+overrides a model's `home` keyframe. See the executable
 [`configs/ephemeral_ee_camera.yaml`](configs/ephemeral_ee_camera.yaml).
 
-The resulting HDF5 layout is:
-
-```text
-/trajectory/time_s                 float64 [ticks]
-/trajectory/qpos                   float64 [ticks, model.nq]
-/trajectory/qvel                   float64 [ticks, model.nv]
-/cameras/<vendor>/<serial>/color  uint8   [frames, H, W, 3]
-/cameras/<vendor>/<serial>/depth  uint16  [frames, H, W]
-                                 /time_s, /scheduled_time_s,
-                                 /trajectory_index, /base_from_optical
-```
-
-File attributes include the resolved run configuration, composed scene MJCF,
-physics timestep, worker count, render timing, and format version. If capture
-or rendering fails, the `.partial.h5` trajectory is retained for diagnosis;
-the final output is only replaced after a successful merge. Existing partial or
-final outputs require `--overwrite`.
-
 `render_workers` defaults to one because EGL context contention is hardware
-dependent. Benchmark the same workload at 1, 2, 4, and so on before choosing a
-larger default for a machine; throughput often stops scaling before the CPU
-core count because workers contend for GPU resources.
+dependent. Benchmark the same workload at 1, 2, 4, and so on; throughput often
+stops scaling before the CPU core count because workers contend for GPU
+resources. If capture or rendering fails, the phase-one `.capture.mcap` is
+retained; the final path appears only after a successful deterministic merge.
 
-To replay one of these files with fr3-teleop's existing Rerun visualizer,
-convert it to that project's staged episode layout:
+## Replay and tensor export
+
+fr3-teleop reads canonical MCAP directly, including embedded color images, so
+Rerun no longer needs a staged directory containing thousands of files:
 
 ```bash
-remu-export-fr3-teleop datasets/run.h5 datasets/run-rerun
-fr3-teleop replay datasets/run-rerun --serve
+fr3-teleop replay -c fr3_remu datasets/run.mcap --serve
 ```
 
-The export preserves the full measured arm/gripper timeline and color frames.
-Depth remains losslessly available in the source HDF5 file; the current
-fr3-teleop staging format consumes the color stream.
+For dense tensor slicing and training preprocessing, export MCAP to HDF5:
 
+```bash
+remu-export-hdf5 datasets/run.mcap datasets/run.h5
+```
+
+The HDF5 export contains `/trajectory/{time_s,qpos,qvel}` and
+`/cameras/<vendor>/<serial>/{color,depth,time_s,scheduled_time_s,trajectory_index}`.
+MCAP remains the source of truth; exports can align, filter, or reshape streams
+without discarding decoded commands, events, attachments, or debug packets.
+The older `remu-export-fr3-teleop` staging converter remains available for
+legacy HDF5 recordings.
 ## FR3 command limits
 
 Joint position and velocity commands are filtered at the 1 kHz physics rate.

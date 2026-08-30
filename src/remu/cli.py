@@ -15,9 +15,10 @@ from remu.camera import (
     parse_camera_config,
 )
 from remu.config import LoadedRunConfig, load_run_config
-from remu.ephemeral import TrajectoryRecorder, render_offline
+from remu.ephemeral import render_offline
 from remu.protocol.franka_protocol import COMMAND_PORT
 from remu.protocol.gripper_protocol import GRIPPER_COMMAND_PORT
+from remu.recording import Attachment, RunRecorder
 from remu.server.franka_server import FrankaFciServer
 from remu.server.gripper_server import FrankaGripperServer
 from remu.sim.mujoco_sim import DEFAULT_JOINT_NAMES, MujocoSim
@@ -96,8 +97,8 @@ def build_parser(defaults=None) -> argparse.ArgumentParser:
     )
     parser.add_argument("--dt", type=float, default=value("dt", 0.001), help="Physics timestep (s)")
     parser.add_argument(
-        "--output", default=value("output", "remu_run.h5"),
-        help="Ephemeral-mode HDF5 output path",
+        "--output", default=value("output", "remu_run.mcap"),
+        help="Ephemeral-mode canonical MCAP output path",
     )
     parser.add_argument(
         "--render-workers", type=int, default=value("render_workers", 1),
@@ -105,7 +106,29 @@ def build_parser(defaults=None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--overwrite", action="store_true", default=value("overwrite", False),
-        help="Replace an existing ephemeral output/partial capture",
+        help="Replace an existing recording or partial capture",
+    )
+    parser.add_argument(
+        "--record", default=value("record", None),
+        help="Persistent-mode MCAP output path (recording is disabled when omitted)",
+    )
+    parser.add_argument(
+        "--record-level", choices=sorted(RunRecorder.LEVELS),
+        default=value("record_level", "standard"),
+        help="minimal decoded state, standard decoded streams, or debug plus raw packets",
+    )
+    parser.add_argument(
+        "--record-chunk-mib", type=float, default=value("record_chunk_mib", 4.0),
+        help="Target compressed MCAP chunk input size in MiB",
+    )
+    parser.add_argument(
+        "--record-rotate-seconds", type=float,
+        default=value("record_rotate_seconds", 0.0),
+        help="Rotate persistent MCAP after this much simulation time (0 disables)",
+    )
+    parser.add_argument(
+        "--record-rotate-mib", type=float, default=value("record_rotate_mib", 0.0),
+        help="Rotate persistent MCAP near this file size (0 disables)",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
     return parser
@@ -145,13 +168,38 @@ def _build_scene(args, cameras):
     )
 
 
-def _servers(args, sim, **fci_kwargs):
+def _chain_callbacks(*callbacks):
+    callbacks = tuple(callback for callback in callbacks if callback is not None)
+    if not callbacks:
+        return None
+
+    def chained(*args, **kwargs):
+        for callback in callbacks:
+            callback(*args, **kwargs)
+
+    return chained
+
+
+def _servers(args, sim, recorder=None, **fci_kwargs):
+    session_start = fci_kwargs.pop("on_session_start", None)
+    session_end = fci_kwargs.pop("on_session_end", None)
     server = FrankaFciServer(
         sim, host=args.host, port=args.port, urdf_path=args.urdf,
-        model_library_path=args.model_library, **fci_kwargs,
+        model_library_path=args.model_library,
+        on_session_start=_chain_callbacks(
+            session_start, recorder.fci_session_start if recorder else None
+        ),
+        on_session_end=_chain_callbacks(
+            recorder.fci_session_end if recorder else None, session_end
+        ),
+        on_command=recorder.fci_command if recorder else None,
+        on_raw_packet=recorder.raw_packet if recorder else None,
+        **fci_kwargs,
     )
     gripper = None if args.no_gripper else FrankaGripperServer(
-        sim, host=args.host, port=args.gripper_port
+        sim, host=args.host, port=args.gripper_port,
+        on_command=recorder.gripper_command if recorder else None,
+        on_raw_packet=recorder.raw_packet if recorder else None,
     )
     return server, gripper
 
@@ -165,7 +213,65 @@ def _write_calibration(path, cameras):
     Path(path).write_text(json.dumps(calibration, indent=2), encoding="utf-8")
 
 
-def _run_persistent(args, sim, cameras):
+def _make_run_recorder(
+    args, loaded, sim, cameras, scene_path, output=None, *, allow_rotation=True
+):
+    output_path = Path(output or args.record).resolve()
+    if output_path.exists() and not args.overwrite:
+        raise FileExistsError(f"recording already exists (use --overwrite): {output_path}")
+    if args.record_chunk_mib <= 0:
+        raise ValueError("--record-chunk-mib must be positive")
+    if args.record_rotate_seconds < 0 or args.record_rotate_mib < 0:
+        raise ValueError("recording rotation thresholds cannot be negative")
+    if output_path.exists():
+        output_path.unlink()
+
+    calibration = cameras_to_calibration(cameras)
+    attachments = {
+        "scene.xml": Attachment(
+            "application/xml", Path(scene_path).read_bytes()
+        ),
+        "camera_calibration.json": Attachment(
+            "application/json", json.dumps(calibration, sort_keys=True).encode()
+        ),
+        "model.json": Attachment(
+            "application/json",
+            json.dumps({
+                "nq": sim.model.nq,
+                "nv": sim.model.nv,
+                "joint_names": sim.joint_names,
+                "finger_joint_names": sim.finger_joint_names if sim.enable_gripper else [],
+            }, sort_keys=True).encode(),
+        ),
+    }
+    if loaded is not None:
+        attachments["config.json"] = Attachment(
+            "application/json", json.dumps(loaded.source, sort_keys=True).encode()
+        )
+    recorder = RunRecorder(
+        output_path,
+        level=args.record_level,
+        metadata={"arguments_json": json.dumps(vars(args), sort_keys=True)},
+        attachments=attachments,
+        chunk_size=int(args.record_chunk_mib * 1024 * 1024),
+        rotate_size_bytes=(
+            int(args.record_rotate_mib * 1024 * 1024) if allow_rotation else 0
+        ),
+        rotate_duration_ns=(
+            int(args.record_rotate_seconds * 1e9) if allow_rotation else 0
+        ),
+    )
+    recorder.attach(sim)
+    return recorder
+
+
+def _run_persistent(args, loaded, sim, cameras, scene_path):
+    recorder = (
+        _make_run_recorder(args, loaded, sim, cameras, scene_path)
+        if args.record else None
+    )
+    if recorder is not None:
+        recorder.start()
     viewer = None
     if args.viewer == "mujoco":
         from remu.viewer.mujoco_viewer import MujocoPassiveViewer
@@ -178,8 +284,13 @@ def _run_persistent(args, sim, cameras):
         for camera in cameras:
             viewer.add_camera(camera)
 
-    server, gripper = _servers(args, sim)
-    camera_server = CameraServer(cameras, host=args.host, port=args.camera_port) if cameras else None
+    server, gripper = _servers(args, sim, recorder=recorder)
+    camera_server = CameraServer(
+        cameras,
+        host=args.host,
+        port=args.camera_port,
+        on_frame=recorder.camera_frame if recorder else None,
+    ) if cameras else None
     try:
         server.start(background=True)
         if gripper is not None:
@@ -205,6 +316,9 @@ def _run_persistent(args, sim, cameras):
         sim.stop()
         if viewer is not None:
             viewer.close()
+        if recorder is not None:
+            count = recorder.stop()
+            print(f"Wrote {count} messages to {', '.join(map(str, recorder.writer.outputs))}")
 
 
 def _run_ephemeral(args, loaded, sim, cameras, scene_path):
@@ -215,15 +329,17 @@ def _run_ephemeral(args, loaded, sim, cameras, scene_path):
 
     output_path = Path(args.output).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    partial_path = output_path.with_name(f"{output_path.stem}.partial{output_path.suffix or '.h5'}")
+    partial_path = output_path.with_name(f"{output_path.stem}.capture.mcap")
     for path in (output_path, partial_path):
         if path.exists() and not args.overwrite:
             raise FileExistsError(f"path already exists (use --overwrite): {path}")
         if path.exists():
             path.unlink()
 
-    recorder = TrajectoryRecorder(partial_path, nq=sim.model.nq, nv=sim.model.nv)
-    sim.on_step_callbacks.append(recorder.capture)
+    recorder = _make_run_recorder(
+        args, loaded, sim, cameras, scene_path, output=partial_path,
+        allow_rotation=False,
+    )
     session_finished = threading.Event()
     capture_errors = []
 
@@ -241,7 +357,8 @@ def _run_ephemeral(args, loaded, sim, cameras, scene_path):
             session_finished.set()
 
     server, gripper = _servers(
-        args, sim, on_session_start=session_start, on_session_end=session_end
+        args, sim, recorder=recorder,
+        on_session_start=session_start, on_session_end=session_end,
     )
     cancelled = False
     try:
@@ -272,7 +389,7 @@ def _run_ephemeral(args, loaded, sim, cameras, scene_path):
         "arguments": vars(args),
         "run_config": loaded.source if loaded is not None else None,
     }
-    print(f"Captured {recorder.sample_count} ticks; rendering offline with {args.render_workers} worker(s)")
+    print(f"Captured {recorder.tick_index} ticks; rendering offline with {args.render_workers} worker(s)")
     result = render_offline(
         scene_path=scene_path,
         capture_path=partial_path,
@@ -306,7 +423,7 @@ def main(argv=None):
             _run_ephemeral(args, loaded, sim, cameras, scene_path)
         else:
             try:
-                _run_persistent(args, sim, cameras)
+                _run_persistent(args, loaded, sim, cameras, scene_path)
             except KeyboardInterrupt:
                 pass
     except KeyboardInterrupt:

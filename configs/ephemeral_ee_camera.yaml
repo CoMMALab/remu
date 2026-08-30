@@ -44,6 +44,6 @@ camera_rig:
         depth: {width: 640, height: 480, format: z16}
 
 ephemeral:
-  output: ../datasets/libero_spatial_task0_seed1000_ee_d435i.h5
+  output: ../datasets/libero_spatial_task0_seed1000_ee_d435i.mcap
   render_workers: 1
   overwrite: false

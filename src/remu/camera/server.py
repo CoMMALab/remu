@@ -68,6 +68,7 @@ class CameraServer:
         cameras: Sequence[EmulatedRgbdCamera],
         host: str = "0.0.0.0",
         port: int = CAMERA_PORT,
+        on_frame=None,
     ):
         self.cameras: List[EmulatedRgbdCamera] = list(cameras)
         serials = [camera.serial for camera in self.cameras]
@@ -75,6 +76,7 @@ class CameraServer:
             raise ValueError("camera serials must be globally unique across vendors")
         self.host = host
         self.port = port
+        self.on_frame = on_frame
 
         self._by_serial: Dict[str, EmulatedRgbdCamera] = {c.serial: c for c in self.cameras}
         self._frames: Dict[str, _LatestFrame] = {c.serial: _LatestFrame() for c in self.cameras}
@@ -113,12 +115,13 @@ class CameraServer:
         color, depth = cam.render(model, data)
         color_bytes = color.tobytes()
         depth_bytes = depth.tobytes()
+        frame_number = self._frames[cam.serial].frame_id + 1
         header = {
             "protocol_version": 2,
             "vendor": cam.vendor,
             "model": cam.model,
             "serial": cam.serial,
-            "frame_number": self._frames[cam.serial].frame_id + 1,
+            "frame_number": frame_number,
             "timestamp_ms": time.time() * 1000.0,
             "depth_scale": cam.depth_scale,
             "color": cam.color_profile.to_dict(),
@@ -126,6 +129,8 @@ class CameraServer:
             "color_bytes": len(color_bytes),
             "depth_bytes": len(depth_bytes),
         }
+        if self.on_frame is not None:
+            self.on_frame(cam, color_bytes, depth_bytes, frame_number)
         self._frames[cam.serial].publish(encode_frame(header, color_bytes, depth_bytes))
 
     # -- network side ------------------------------------------------------

@@ -8,7 +8,7 @@ import struct
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -57,12 +57,16 @@ class FrankaGripperServer:
         sim: MujocoSim,
         host: str = "0.0.0.0",
         port: int = GRIPPER_COMMAND_PORT,
+        on_command: Optional[Callable[[dict], None]] = None,
+        on_raw_packet: Optional[Callable[..., None]] = None,
     ):
         if not sim.enable_gripper:
             raise ValueError("cannot start a gripper server for a gripper-disabled simulation")
         self.sim = sim
         self.host = host
         self.port = port
+        self.on_command = on_command
+        self.on_raw_packet = on_raw_packet
         self.server_socket: Optional[socket.socket] = None
         self.client_socket: Optional[socket.socket] = None
         self.udp_socket: Optional[socket.socket] = None
@@ -99,10 +103,29 @@ class FrankaGripperServer:
         payload = self._receive_exact(sock, payload_size) if payload_size else b""
         if payload is None:
             return None, None
+        if self.on_raw_packet is not None:
+            self.on_raw_packet(
+                transport="tcp", direction="client_to_remu",
+                endpoint="gripper", data=header_data + payload,
+            )
         return header, payload
 
     def _send_status(self, sock, command, command_id, status):
-        sock.sendall(response(command, command_id, status))
+        packet = response(command, command_id, status)
+        sock.sendall(packet)
+        if self.on_raw_packet is not None:
+            self.on_raw_packet(
+                transport="tcp", direction="remu_to_client",
+                endpoint="gripper", data=packet,
+            )
+
+    def _emit_command(self, command, command_id, **values) -> None:
+        if self.on_command is not None:
+            self.on_command({
+                "command": command.name,
+                "command_id": command_id,
+                **values,
+            })
 
     def _start_motion(
         self,
@@ -213,11 +236,16 @@ class FrankaGripperServer:
             return
 
         if command == GripperCommand.kConnect:
+            self._emit_command(command, header.command_id)
             self._handle_connect(sock, header, payload)
         elif command == GripperCommand.kHoming:
             if payload:
                 self._send_status(sock, command, header.command_id, GripperStatus.kFail)
             else:
+                self._emit_command(
+                    command, header.command_id, width=FRANKA_HAND_MAX_WIDTH,
+                    speed=0.05, force=FRANKA_HAND_MAX_FORCE,
+                )
                 self._start_motion(
                     sock, command, header.command_id, FRANKA_HAND_MAX_WIDTH, 0.05,
                     FRANKA_HAND_MAX_FORCE,
@@ -227,6 +255,10 @@ class FrankaGripperServer:
                 self._send_status(sock, command, header.command_id, GripperStatus.kFail)
             else:
                 width, speed = struct.unpack("<dd", payload)
+                self._emit_command(
+                    command, header.command_id, width=width, speed=speed,
+                    force=FRANKA_HAND_MAX_FORCE,
+                )
                 self._start_motion(
                     sock, command, header.command_id, width, speed, FRANKA_HAND_MAX_FORCE
                 )
@@ -242,6 +274,10 @@ class FrankaGripperServer:
                 ):
                     self._send_status(sock, command, header.command_id, GripperStatus.kFail)
                 else:
+                    self._emit_command(
+                        command, header.command_id, width=width, speed=speed, force=force,
+                        epsilon_inner=eps_inner, epsilon_outer=eps_outer,
+                    )
                     # ``width`` describes the expected held object, not a
                     # no-load position target. Close fully; contact stops the
                     # fingers and the requested force caps the resulting load.
@@ -251,6 +287,7 @@ class FrankaGripperServer:
                         eps_inner, eps_outer, evaluation_width=width,
                     )
         elif command == GripperCommand.kStop:
+            self._emit_command(command, header.command_id)
             self.sim.stop_gripper()
             self._is_grasped = False
             self._abort_pending(sock)
@@ -266,13 +303,16 @@ class FrankaGripperServer:
                 state = self.sim.get_finger_state()
                 is_grasped = self._is_grasped and bool(state["contact_body_ids"])
                 try:
-                    udp.sendto(
-                        pack_state(
-                            message_id, float(state["width"]), FRANKA_HAND_MAX_WIDTH,
-                            is_grasped, 30,
-                        ),
-                        (address, port),
+                    packet = pack_state(
+                        message_id, float(state["width"]), FRANKA_HAND_MAX_WIDTH,
+                        is_grasped, 30,
                     )
+                    udp.sendto(packet, (address, port))
+                    if self.on_raw_packet is not None:
+                        self.on_raw_packet(
+                            transport="udp", direction="remu_to_client",
+                            endpoint="gripper", data=packet,
+                        )
                     message_id = (message_id + 1) & 0xFFFFFFFF
                 except OSError:
                     pass

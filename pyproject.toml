@@ -13,7 +13,10 @@ dependencies = [
     "numpy>=1.26",
     "PyYAML>=6.0",
     "h5py>=3.10",
+    "mcap>=1.2,<2",
+    "mcap-protobuf-support>=0.5,<1",
     "Pillow>=10",
+    "protobuf>=6.33.5,<7",
     "robot_descriptions>=1.12",
 ]
 
@@ -23,13 +26,14 @@ dev = ["pytest", "pytest-timeout"]
 
 [project.scripts]
 remu = "remu.cli:main"
+remu-export-hdf5 = "remu.hdf5:main"
 remu-export-fr3-teleop = "remu.fr3_teleop:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-remu = ["models/*.urdf", "models/*.c", "models/*.so"]
+remu = ["models/*.urdf", "models/*.c", "models/*.so", "proto/*.proto"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

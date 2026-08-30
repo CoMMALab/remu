@@ -49,6 +49,7 @@ def load_run_config(path: str | Path) -> LoadedRunConfig:
     network = _mapping(root.get("network"), "network")
     viewer = _mapping(root.get("viewer"), "viewer")
     ephemeral = _mapping(root.get("ephemeral"), "ephemeral")
+    recording = _mapping(root.get("recording"), "recording")
     base = config_path.parent
 
     defaults: dict[str, Any] = {}
@@ -71,6 +72,11 @@ def load_run_config(path: str | Path) -> LoadedRunConfig:
         "output": _resolve_path(base, ephemeral.get("output")),
         "render_workers": ephemeral.get("render_workers"),
         "overwrite": ephemeral.get("overwrite"),
+        "record": _resolve_path(base, recording.get("path")),
+        "record_level": recording.get("level"),
+        "record_chunk_mib": recording.get("chunk_mib"),
+        "record_rotate_seconds": recording.get("rotate_seconds"),
+        "record_rotate_mib": recording.get("rotate_mib"),
     }
     defaults.update({key: value for key, value in scalar_values.items() if value is not None})
 

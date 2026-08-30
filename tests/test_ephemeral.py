@@ -4,7 +4,8 @@ import h5py
 import numpy as np
 
 from remu.cli import _parse_args
-from remu.ephemeral import TrajectoryRecorder, schedule_camera_frames
+from remu.ephemeral import TrajectoryRecorder, load_trajectory, schedule_camera_frames
+from remu.recording import iter_messages
 
 
 def test_scheduler_uses_first_tick_at_or_after_each_boundary():
@@ -19,7 +20,7 @@ def test_scheduler_uses_first_tick_at_or_after_each_boundary():
 
 
 def test_recorder_writes_complete_qpos_and_qvel_for_every_tick(tmp_path):
-    path = tmp_path / "capture.h5"
+    path = tmp_path / "capture.mcap"
     recorder = TrajectoryRecorder(path, nq=4, nv=3, block_size=2)
     recorder.start()
     for tick in range(5):
@@ -30,12 +31,12 @@ def test_recorder_writes_complete_qpos_and_qvel_for_every_tick(tmp_path):
         ))
     assert recorder.stop() == 5
 
-    with h5py.File(path) as capture:
-        assert capture["trajectory/time_s"].shape == (5,)
-        assert capture["trajectory/qpos"].shape == (5, 4)
-        assert capture["trajectory/qvel"].shape == (5, 3)
-        assert np.array_equal(capture["trajectory/qpos"][4], np.arange(4) + 4)
-        assert np.array_equal(capture["trajectory/qvel"][4], np.arange(3) - 4)
+    capture = load_trajectory(path)
+    assert capture.time_s.shape == (5,)
+    assert capture.qpos.shape == (5, 4)
+    assert capture.qvel.shape == (5, 3)
+    assert np.array_equal(capture.qpos[4], np.arange(4) + 4)
+    assert np.array_equal(capture.qvel[4], np.arange(3) - 4)
 
 
 def test_unified_config_paths_and_cli_overrides(tmp_path):
@@ -48,8 +49,14 @@ robot:
   initial_q: [0, -0.2, 0, -2.4, 0, 2.2, 0.7]
 simulation: {dt: 0.001}
 viewer: {backend: none}
+recording:
+  path: data/persistent.mcap
+  level: debug
+  chunk_mib: 8
+  rotate_seconds: 60
+  rotate_mib: 1024
 ephemeral:
-  output: data/run.h5
+  output: data/run.mcap
   render_workers: 2
 """)
 
@@ -60,9 +67,14 @@ ephemeral:
 
     assert loaded is not None
     assert args.mode == "ephemeral"
+    assert args.record == str(tmp_path / "data/persistent.mcap")
+    assert args.record_level == "debug"
+    assert args.record_chunk_mib == 8
+    assert args.record_rotate_seconds == 60
+    assert args.record_rotate_mib == 1024
     assert args.viewer == "none"
     assert args.scene_mjcf == str(tmp_path / "scene.xml")
-    assert args.output == str(tmp_path / "data/run.h5")
+    assert args.output == str(tmp_path / "data/run.mcap")
     assert args.render_workers == 4
     assert args.initial_q[0] == 0.1
 
@@ -88,19 +100,19 @@ def test_parallel_chunk_boundaries_match_single_worker(tmp_path):
     try:
         sim = MujocoSim(scene, realtime=False)
         sim.build()
-        capture_one = tmp_path / "one.partial.h5"
+        capture_one = tmp_path / "one.capture.mcap"
         recorder = TrajectoryRecorder(capture_one, nq=sim.model.nq, nv=sim.model.nv, block_size=16)
         sim.on_step_callbacks.append(recorder.capture)
         recorder.start()
         for _ in range(70):
             sim.step()
         recorder.stop()
-        capture_two = tmp_path / "two.partial.h5"
+        capture_two = tmp_path / "two.capture.mcap"
         shutil.copyfile(capture_one, capture_two)
 
         try:
-            output_one = tmp_path / "one.h5"
-            output_two = tmp_path / "two.h5"
+            output_one = tmp_path / "one.mcap"
+            output_two = tmp_path / "two.mcap"
             render_offline(
                 scene_path=scene, capture_path=capture_one, output_path=output_one,
                 cameras=[camera], workers=1,
@@ -112,10 +124,21 @@ def test_parallel_chunk_boundaries_match_single_worker(tmp_path):
         except Exception as exc:
             pytest.skip(f"offscreen multiprocessing render unavailable: {exc}")
 
-        with h5py.File(output_one) as first, h5py.File(output_two) as second:
-            path = "cameras/realsense/parallel-test"
-            for name in ("trajectory_index", "scheduled_time_s", "time_s", "color", "depth"):
-                assert np.array_equal(first[f"{path}/{name}"][:], second[f"{path}/{name}"][:])
+        def camera_rows(path):
+            return [
+                (
+                    row.topic,
+                    row.proto_msg.frame_index,
+                    row.proto_msg.trajectory_tick_index,
+                    row.proto_msg.scheduled_sim_time_ns,
+                    row.proto_msg.actual_sim_time_ns,
+                    row.proto_msg.data,
+                )
+                for row in iter_messages(path)
+                if row.topic.startswith("/remu/camera/")
+            ]
+
+        assert camera_rows(output_one) == camera_rows(output_two)
     finally:
         scene.unlink(missing_ok=True)
 

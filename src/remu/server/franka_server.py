@@ -68,10 +68,14 @@ class FrankaFciServer:
         model_library_path: Optional[Path] = None,
         on_session_start: Optional[Callable[[], None]] = None,
         on_session_end: Optional[Callable[[], None]] = None,
+        on_command: Optional[Callable[[dict], None]] = None,
+        on_raw_packet: Optional[Callable[..., None]] = None,
     ):
         self.sim = sim
         self.on_session_start = on_session_start
         self.on_session_end = on_session_end
+        self.on_command = on_command
+        self.on_raw_packet = on_raw_packet
         self.host = host
         self.port = port
         self.library_version = PROTOCOL_VERSION
@@ -314,6 +318,11 @@ class FrankaFciServer:
                 continue
             if len(data) != _ROBOT_COMMAND_SIZE:
                 continue
+            if self.on_raw_packet is not None:
+                self.on_raw_packet(
+                    transport="udp", direction="client_to_remu",
+                    endpoint="fci", data=data,
+                )
 
             offset = 0
             message_id = struct.unpack("<Q", data[offset : offset + 8])[0]
@@ -332,6 +341,18 @@ class FrankaFciServer:
 
             if message_id == 0:
                 continue
+
+            if self.on_command is not None:
+                self.on_command({
+                    "message_id": message_id,
+                    "mode": self.control_mode.value,
+                    "q_command": q_c,
+                    "dq_command": dq_c,
+                    "tau_command": tau_J_d,
+                    "motion_finished": (
+                        motion_generation_finished or torque_command_finished
+                    ),
+                })
 
             if motion_generation_finished or torque_command_finished:
                 if self.control_mode != ControlMode.POSITION:
@@ -407,9 +428,13 @@ class FrankaFciServer:
             self.robot_state.state["O_T_EE"] = list(sim_state["O_T_EE"])
 
             if self.udp_socket and not self.udp_socket._closed:
-                self.udp_socket.sendto(
-                    self.robot_state.pack_state(), (client_address, client_udp_port)
-                )
+                packet = self.robot_state.pack_state()
+                self.udp_socket.sendto(packet, (client_address, client_udp_port))
+                if self.on_raw_packet is not None:
+                    self.on_raw_packet(
+                        transport="udp", direction="remu_to_client",
+                        endpoint="fci", data=packet,
+                    )
 
             if not first_state_sent and self.current_motion_id:
                 self._send_move_response(self.client_socket, self.current_motion_id, MoveStatus.kSuccess)
