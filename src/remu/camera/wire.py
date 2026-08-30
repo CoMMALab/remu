@@ -24,7 +24,7 @@ shim hands the perception code byte-identical buffers to the real SDK's.
 import json
 import struct
 
-CAMERA_PORT = 1338
+CAMERA_PORT = 1339
 
 MAGIC = b"RMUC"
 _PREFIX = struct.Struct("<4sI")

@@ -1,6 +1,8 @@
 references/
 .pytest_cache/
 __pycache__/
+*/*.pyc
+*/*.egg-info
 
 # Ground-truth camera extrinsics, regenerated on every run of
 # scripts/run_fci_viser.py.

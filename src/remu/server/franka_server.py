@@ -1,7 +1,7 @@
 """FCI (Franka Control Interface) network server.
 
-Implements the libfranka research_interface wire protocol (v10, robot server
-10) on top of a :class:`~remu.sim.mujoco_sim.MujocoSim` physics backend, so a
+Implements the libfranka research_interface wire protocol v9 on top of a
+:class:`~remu.sim.mujoco_sim.MujocoSim` physics backend, so a
 real ``franka::Robot`` client (or a libfranka-based controller) can connect to
 ``127.0.0.1`` and drive the simulated arm exactly as it would drive hardware.
 
@@ -12,6 +12,7 @@ from the ``libfranka-sim`` reference implementation vendored under
 
 import errno
 import logging
+import os
 import select
 import socket
 import struct
@@ -31,6 +32,7 @@ from remu.protocol.franka_protocol import (
     MotionGeneratorMode,
     MoveCommand,
     MoveStatus,
+    ModelLibraryStatus,
     PROTOCOL_VERSION,
     RobotMode,
     SetCartesianImpedanceCommand,
@@ -40,6 +42,7 @@ from remu.protocol.franka_protocol import (
     convert_to_libfranka_motion_mode,
 )
 from remu.protocol.robot_state import RobotState
+from remu.server.model_library import ModelLibraryUnavailable, model_library_bytes
 from remu.sim.mujoco_sim import ControlMode, MujocoSim
 
 logger = logging.getLogger(__name__)
@@ -62,11 +65,14 @@ class FrankaFciServer:
         host: str = "0.0.0.0",
         port: int = COMMAND_PORT,
         urdf_path: Optional[Path] = None,
+        model_library_path: Optional[Path] = None,
     ):
         self.sim = sim
         self.host = host
         self.port = port
         self.library_version = PROTOCOL_VERSION
+        configured_library = model_library_path or os.environ.get("REMU_MODEL_LIBRARY")
+        self.model_library_path = Path(configured_library) if configured_library else None
 
         self.server_socket: Optional[socket.socket] = None
         self.client_socket: Optional[socket.socket] = None
@@ -137,6 +143,28 @@ class FrankaFciServer:
         payload = struct.pack("<B", 0) + urdf_bytes
         response_header = MessageHeader(Command.kGetRobotModel, header.command_id, 12 + len(payload))
         client_socket.sendall(response_header.to_bytes() + payload)
+
+    def _handle_load_model_library(self, client_socket, header, payload):
+        library = b""
+        status = ModelLibraryStatus.kError
+        if payload is not None and len(payload) == 2:
+            architecture, system = struct.unpack("<BB", payload)
+            try:
+                library = model_library_bytes(
+                    architecture, system, override=self.model_library_path
+                )
+                status = ModelLibraryStatus.kSuccess
+            except ModelLibraryUnavailable as exc:
+                logger.error("Cannot serve model library: %s", exc)
+        else:
+            logger.warning("Invalid LoadModelLibrary payload size: %s", len(payload or b""))
+
+        # This response is packed: one status byte followed immediately by
+        # the shared-library bytes. Padding would corrupt the downloaded ELF.
+        response_header = MessageHeader(
+            Command.kLoadModelLibrary, header.command_id, 13 + len(library)
+        )
+        client_socket.sendall(response_header.to_bytes() + bytes([status]) + library)
 
     def _send_status_response(self, client_socket, command, command_id, status_value=0):
         total_size = 12 + 4
@@ -244,6 +272,8 @@ class FrankaFciServer:
                     self._send_status_response(client_socket, header.command, header.command_id)
                 elif header.command == Command.kGetRobotModel:
                     self._handle_get_robot_model(client_socket, header)
+                elif header.command == Command.kLoadModelLibrary:
+                    self._handle_load_model_library(client_socket, header, payload)
                 elif header.command == Command.kAutomaticErrorRecovery:
                     self._handle_automatic_error_recovery(client_socket, header)
                 else:
@@ -362,6 +392,11 @@ class FrankaFciServer:
 
             self.robot_state.state["q"] = list(sim_state["q"])
             self.robot_state.state["dq"] = list(sim_state["dq"])
+            # Report the command trajectory after the simulator's FR3 limit
+            # filter, matching the q_d/dq_d/ddq_d semantics of real FCI state.
+            self.robot_state.state["q_d"] = list(sim_state["q_d"])
+            self.robot_state.state["dq_d"] = list(sim_state["dq_d"])
+            self.robot_state.state["ddq_d"] = list(sim_state["ddq_d"])
             self.robot_state.state["tau_J"] = list(sim_state["tau_J"])
             self.robot_state.state["O_T_EE"] = list(sim_state["O_T_EE"])
 
@@ -403,8 +438,20 @@ class FrankaFciServer:
                 logger.error("Invalid Connect payload")
                 return
 
-            _version, network_udp_port = struct.unpack("<HH", payload[:4])
-            self._send_connect_response(client_socket, header.command_id, ConnectStatus.kSuccess)
+            version, network_udp_port = struct.unpack("<HH", payload[:4])
+            connect_status = (
+                ConnectStatus.kSuccess
+                if version == self.library_version
+                else ConnectStatus.kIncompatibleLibraryVersion
+            )
+            self._send_connect_response(client_socket, header.command_id, connect_status)
+            if connect_status != ConnectStatus.kSuccess:
+                logger.warning(
+                    "Rejected FCI protocol v%d client; remu implements v%d",
+                    version,
+                    self.library_version,
+                )
+                return
 
             tcp_thread = threading.Thread(target=self._handle_tcp_messages, args=(client_socket,), daemon=True)
             tcp_thread.start()

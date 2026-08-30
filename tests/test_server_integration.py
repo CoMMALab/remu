@@ -66,7 +66,7 @@ def _connect(server) -> _Client:
     udp_sock.bind(("127.0.0.1", 0))
     udp_port = udp_sock.getsockname()[1]
 
-    payload = struct.pack("<HH", 10, udp_port)
+    payload = struct.pack("<HH", 9, udp_port)
     header = MessageHeader(Command.kConnect, 1, 12 + len(payload))
     sock.sendall(header.to_bytes() + payload)
 
@@ -82,6 +82,21 @@ def _connect(server) -> _Client:
 def test_connect_handshake(running_server):
     server, _sim = running_server
     sock = _connect(server)
+    sock.close()
+
+
+def test_incompatible_protocol_version_is_rejected(running_server):
+    server, _sim = running_server
+    sock = socket.create_connection(("127.0.0.1", server.port), timeout=2.0)
+    payload = struct.pack("<HH", 10, 12345)
+    header = MessageHeader(Command.kConnect, 1, 12 + len(payload))
+    sock.sendall(header.to_bytes() + payload)
+
+    response_header = MessageHeader.from_bytes(sock.recv(12))
+    status, version = struct.unpack("<BH", sock.recv(3))
+    assert response_header.command == Command.kConnect
+    assert status == ConnectStatus.kIncompatibleLibraryVersion
+    assert version == 9
     sock.close()
 
 
@@ -101,6 +116,28 @@ def test_get_robot_model_returns_urdf(running_server):
     assert resp_header.command == Command.kGetRobotModel
     assert payload[0] == 0
     assert b"<robot" in payload[1:]
+    sock.close()
+
+
+def test_load_model_library_returns_unpadded_binary(running_server, tmp_path):
+    server, _sim = running_server
+    expected = b"\x7fELFremu-test-model"
+    library_path = tmp_path / "libfcimodels.so"
+    library_path.write_bytes(expected)
+    server.model_library_path = library_path
+    sock = _connect(server)
+
+    request = struct.pack("<BB", 3, 0)  # ARM64, Linux
+    header = MessageHeader(Command.kLoadModelLibrary, 3, 12 + len(request))
+    sock.sendall(header.to_bytes() + request)
+    response_header = MessageHeader.from_bytes(sock.recv(12))
+    payload = b""
+    while len(payload) < response_header.size - 12:
+        payload += sock.recv(response_header.size - 12 - len(payload))
+
+    assert response_header.command == Command.kLoadModelLibrary
+    assert response_header.size == 13 + len(expected)
+    assert payload == b"\x00" + expected
     sock.close()
 
 
