@@ -165,3 +165,90 @@ def test_attach_publishes_an_immutable_snapshot_without_rendering():
     assert sim_time == 1.25
     server.stop()
     assert sim.on_step_callbacks == []
+
+
+def _net_camera(serial, name, ip, port=8090, network_only=True):
+    camera = _camera("orbbec", "gemini_435le", serial)
+    camera.device_name = name
+    camera.ip = ip
+    camera.port = port
+    camera.network_only = network_only
+    return camera
+
+
+@pytest.fixture
+def net_shim_server(monkeypatch):
+    """One Ethernet-only 435Le beside one dual-transport Femto Mega."""
+    cameras = [
+        _net_camera("CP4A55D000F", "Orbbec Gemini 435Le", "192.168.50.11"),
+        _net_camera("CL25854007B", "Orbbec Femto Mega", "192.168.50.10",
+                    network_only=False),
+    ]
+    cameras[1].model = "femto_mega"
+    port = _free_port()
+    server = CameraServer(cameras, host="127.0.0.1", port=port).start()
+    for camera in cameras:
+        server._render_one(camera, None, None)
+    monkeypatch.setenv("REMU_CAMERA_ADDR", f"127.0.0.1:{port}")
+    yield cameras, server
+    server.stop()
+
+
+def test_ethernet_only_device_is_withheld_from_usb_enumeration(net_shim_server):
+    ob = _load("_test_ob_net_enum", "pyorbbecsdk.py")
+    devices = ob.Context().query_devices()
+
+    serials = {
+        devices.get_device_serial_number_by_index(i) for i in range(devices.get_count())
+    }
+
+    assert "CP4A55D000F" not in serials  # 435Le has no USB mode
+    assert "CL25854007B" in serials      # the Mega does
+
+
+def test_create_net_device_opens_the_configured_address(net_shim_server):
+    ob = _load("_test_ob_net_open", "pyorbbecsdk.py")
+
+    device = ob.Context().create_net_device("192.168.50.11", 8090)
+
+    assert device is not None
+    info = device.get_device_info()
+    assert info.get_serial_number() == "CP4A55D000F"
+    assert info.get_name() == "Orbbec Gemini 435Le"
+    assert info.get_connection_type() == "Ethernet"
+
+
+def test_create_net_device_returns_none_for_an_unknown_address(net_shim_server):
+    ob = _load("_test_ob_net_miss", "pyorbbecsdk.py")
+    context = ob.Context()
+
+    assert context.create_net_device("192.168.50.99", 8090) is None
+    assert context.create_net_device("192.168.50.11", 9999) is None
+
+
+def test_dual_transport_device_reports_the_path_it_was_opened_with(net_shim_server):
+    ob = _load("_test_ob_net_dual", "pyorbbecsdk.py")
+    context = ob.Context()
+    devices = context.query_devices()
+    index = next(
+        i for i in range(devices.get_count())
+        if devices.get_device_serial_number_by_index(i) == "CL25854007B"
+    )
+
+    over_usb = devices.get_device_by_index(index)
+    over_ethernet = context.create_net_device("192.168.50.10", 8090)
+
+    assert over_usb.get_device_info().get_connection_type() == "USB3.0"
+    assert over_ethernet.get_device_info().get_connection_type() == "Ethernet"
+
+
+def test_device_name_by_index_reports_the_configured_model(net_shim_server):
+    ob = _load("_test_ob_net_names", "pyorbbecsdk.py")
+    devices = ob.Context().query_devices()
+
+    names = {
+        devices.get_device_serial_number_by_index(i): devices.get_device_name_by_index(i)
+        for i in range(devices.get_count())
+    }
+
+    assert names == {"CL25854007B": "Orbbec Femto Mega"}

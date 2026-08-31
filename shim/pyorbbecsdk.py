@@ -22,6 +22,26 @@ _spec.loader.exec_module(wire)
 
 DEFAULT_ADDR = ("127.0.0.1", wire.CAMERA_PORT)
 
+#: Port the SDK dials for a network device, matching remu's
+#: camera.config.DEFAULT_NET_PORT. This is the *emulated device* address,
+#: which has nothing to do with REMU_CAMERA_ADDR -- that is where remu's
+#: own frame server lives.
+DEFAULT_NET_PORT = 8090
+
+
+def _with_transport(info, transport):
+    """Record how a device handle was opened.
+
+    One unit answers get_connection_type() differently depending on the path
+    used to reach it: a Femto Mega reports "Ethernet" through
+    create_net_device and "USB2.1" through enumeration, at the same time
+    (confirmed live on CL25854007B). Carrying it on the record keeps that
+    true through Pipeline.get_device(), which rebuilds a Device from it.
+    """
+    tagged = dict(info)
+    tagged["_transport"] = transport
+    return tagged
+
 
 def _server_addr():
     raw = os.environ.get("REMU_CAMERA_ADDR")
@@ -100,7 +120,7 @@ class DeviceInfo:
         return self.get_serial_number()
 
     def get_connection_type(self):
-        return "Ethernet" if os.environ.get("REMU_CAMERA_ADDR") else "USB3.0"
+        return self._info.get("_transport", "USB3.0")
 
 
 class Device:
@@ -112,14 +132,22 @@ class Device:
 
 
 class DeviceList:
-    def __init__(self, devices):
-        self._devices = [Device(info) for info in devices]
+    def __init__(self, devices, transport="USB3.0"):
+        self._devices = [
+            Device(_with_transport(info, transport)) for info in devices
+        ]
 
     def get_count(self):
         return len(self._devices)
 
     def get_device_by_index(self, index):
         return self._devices[index]
+
+    def get_device_serial_number_by_index(self, index):
+        return self._devices[index].get_device_info().get_serial_number()
+
+    def get_device_name_by_index(self, index):
+        return self._devices[index].get_device_info().get_name()
 
     def __len__(self):
         return len(self._devices)
@@ -130,12 +158,45 @@ class DeviceList:
 
 class Context:
     def query_devices(self):
+        """Enumerate devices reachable over USB.
+
+        An Ethernet-only unit is withheld here on purpose: the real SDK
+        surfaces one only after enable_net_device_enumeration() broadcast
+        discovery finds it, which needs both hosts on one L2 segment.
+        Listing it unconditionally would let a config that works against the
+        emulator fail against the hardware.
+        """
         try:
             sock, response = _connect({"op": "list_devices", "vendor": "orbbec"})
         except OSError:
             return DeviceList([])
         try:
-            return DeviceList(response["devices"])
+            return DeviceList(
+                [d for d in response["devices"] if not d.get("network_only")],
+                transport="USB3.0",
+            )
+        finally:
+            sock.close()
+
+    def create_net_device(self, ip, port=DEFAULT_NET_PORT):
+        """Open a device by address, the way Ethernet units are reached.
+
+        Returns ``None`` when nothing answers at that address rather than
+        raising, because that is what the real SDK does and what callers
+        check for -- see fr3-teleop's OrbbecCamera._acquire_device.
+        """
+        try:
+            sock, response = _connect({"op": "list_devices", "vendor": "orbbec"})
+        except OSError:
+            return None
+        try:
+            for info in response["devices"]:
+                if info.get("ip") != ip:
+                    continue
+                if int(info.get("port") or DEFAULT_NET_PORT) != int(port):
+                    continue
+                return Device(_with_transport(info, "Ethernet"))
+            return None
         finally:
             sock.close()
 
