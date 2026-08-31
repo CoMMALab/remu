@@ -7,14 +7,15 @@ language. Here the "language" is the pyrealsense2 Python API, which
 pointcloud_perception runs unmodified, in its own container, against a
 simulated camera.
 
-Rendering happens on the physics thread via :meth:`CameraServer.attach`, not
-on the client threads. Two reasons: ``MjData`` would otherwise be read while
-it is being stepped, and each ``mujoco.Renderer`` owns an OpenGL context that
-cannot be used from a thread other than the one that created it. Client
-threads only ever ship the most recently rendered bytes.
+The physics thread only publishes a small, immutable state snapshot. A
+dedicated render thread owns a second ``MjData`` plus every OpenGL context,
+so GPU rendering, readback, encoding, and recording callbacks do not synchronously block
+the 1 kHz control loop. Client threads only ever ship the most recently
+rendered bytes.
 """
 
 import logging
+import os
 import socket
 import threading
 import time
@@ -80,7 +81,11 @@ class CameraServer:
 
         self._by_serial: Dict[str, EmulatedRgbdCamera] = {c.serial: c for c in self.cameras}
         self._frames: Dict[str, _LatestFrame] = {c.serial: _LatestFrame() for c in self.cameras}
-        self._last_render: Dict[str, float] = {c.serial: 0.0 for c in self.cameras}
+        self._sim = None
+        self._latest_state = None
+        self._render_thread: Optional[threading.Thread] = None
+        self._render_stop = threading.Event()
+        self._render_ready = threading.Event()
 
         self.running = False
         self._sock: Optional[socket.socket] = None
@@ -89,27 +94,96 @@ class CameraServer:
         # report *why* none arrived instead of just timing out.
         self.last_render_error: Optional[BaseException] = None
 
-    # -- render side (physics thread) --------------------------------------
+    # -- render side -------------------------------------------------------
 
     def attach(self, sim):
-        """Render each camera at its own fps as part of ``sim``'s step loop."""
-        sim.on_step_callbacks.append(self.render_due)
+        """Publish simulation state to an asynchronous camera renderer."""
+        if self._sim is sim:
+            return self
+        if self._sim is not None:
+            raise RuntimeError("camera server is already attached to a simulator")
+        self._sim = sim
+        self.publish_state(sim.model, sim.data)
+        sim.on_step_callbacks.append(self.publish_state)
         return self
 
-    def render_due(self, model, data) -> None:
-        """Render whichever cameras are due for a new frame. Called per step."""
-        now = time.monotonic()
-        for cam in self.cameras:
-            if now - self._last_render[cam.serial] < 1.0 / cam.fps:
-                continue
-            self._last_render[cam.serial] = now
-            try:
-                self._render_one(cam, model, data)
-            except Exception as exc:
-                # A render failure must not kill the physics loop -- the arm
-                # keeps running and the camera stream simply stalls.
-                self.last_render_error = exc
-                logger.exception("camera %s render failed", cam.serial)
+    def publish_state(self, _model, data) -> None:
+        """Atomically replace the latest render state; called at 1 kHz."""
+        self._latest_state = (
+            data.qpos.copy(),
+            data.mocap_pos.copy(),
+            data.mocap_quat.copy(),
+            float(data.time),
+        )
+
+    @staticmethod
+    def _drop_realtime_priority() -> None:
+        """Keep camera work from competing with a real-time control thread."""
+        try:
+            os.sched_setscheduler(0, os.SCHED_OTHER, os.sched_param(0))
+        except (AttributeError, OSError):
+            logger.warning("could not set camera render thread to SCHED_OTHER", exc_info=True)
+
+    def _render_loop(self) -> None:
+        self._drop_realtime_priority()
+        try:
+            self._render_loop_inner()
+        except Exception as exc:
+            self.last_render_error = exc
+            logger.exception("camera render worker failed")
+        finally:
+            self._render_ready.set()
+
+    def _render_loop_inner(self) -> None:
+        import mujoco
+
+        model = mujoco.MjModel.from_xml_path(str(self._sim.scene_xml_path))
+        data = mujoco.MjData(model)
+        periods = {camera.serial: 1.0 / camera.fps for camera in self.cameras}
+        start = time.perf_counter()
+        count = len(self.cameras)
+        deadlines = {
+            camera.serial: start + index * periods[camera.serial] / count
+            for index, camera in enumerate(self.cameras)
+        }
+
+        try:
+            while self.running and not self._render_stop.is_set():
+                now = time.perf_counter()
+                due = sorted(
+                    (camera for camera in self.cameras if deadlines[camera.serial] <= now),
+                    key=lambda camera: deadlines[camera.serial],
+                )
+                state = self._latest_state
+                if due and state is not None:
+                    qpos, mocap_pos, mocap_quat, _sim_time = state
+                    data.qpos[:] = qpos
+                    data.mocap_pos[:] = mocap_pos
+                    data.mocap_quat[:] = mocap_quat
+                    mujoco.mj_forward(model, data)
+
+                    for camera in due:
+                        deadline = deadlines[camera.serial]
+                        try:
+                            self._render_one(camera, model, data)
+                            if all(frame.frame_id for frame in self._frames.values()):
+                                self._render_ready.set()
+                        except Exception as exc:
+                            self.last_render_error = exc
+                            logger.exception("camera %s render failed", camera.serial)
+                        period = periods[camera.serial]
+                        elapsed_periods = max(
+                            1, int((time.perf_counter() - deadline) // period) + 1
+                        )
+                        deadlines[camera.serial] = deadline + elapsed_periods * period
+                    continue
+
+                next_deadline = min(deadlines.values())
+                timeout = max(0.0, min(next_deadline - now, 0.01))
+                self._render_stop.wait(timeout if state is not None else 0.001)
+        finally:
+            for camera in self.cameras:
+                camera.close()
 
     def _render_one(self, cam: EmulatedRgbdCamera, model, data) -> None:
         color, depth = cam.render(model, data)
@@ -139,8 +213,18 @@ class CameraServer:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind((self.host, self.port))
+        self.port = self._sock.getsockname()[1]
         self._sock.listen(8)
         self.running = True
+        self._render_stop.clear()
+        self._render_ready.clear()
+        if self._sim is not None:
+            self._render_thread = threading.Thread(
+                target=self._render_loop, name="remu-camera-render", daemon=True
+            )
+            self._render_thread.start()
+            if not self._render_ready.wait(timeout=15.0):
+                logger.warning("camera renderer did not produce its first frames within 15 seconds")
         logger.info(
             "camera server on %s:%d serving %s",
             self.host, self.port, ", ".join(c.serial for c in self.cameras),
@@ -233,11 +317,19 @@ class CameraServer:
 
     def stop(self) -> None:
         self.running = False
+        self._render_stop.set()
         if self._sock is not None:
             self._sock.close()
             self._sock = None
-        # Renderers are deliberately *not* closed here: their OpenGL contexts
-        # belong to the physics thread that created them, and freeing a
-        # context from another thread crashes rather than erroring. They are
-        # released when the process exits, or by whoever owns the sim loop.
+        if self._render_thread is not None:
+            self._render_thread.join(timeout=5.0)
+            if self._render_thread.is_alive():
+                logger.warning("camera render thread did not stop within 5 seconds")
+            self._render_thread = None
+        if self._sim is not None:
+            try:
+                self._sim.on_step_callbacks.remove(self.publish_state)
+            except ValueError:
+                pass
+            self._sim = None
         logger.info("camera server stopped")

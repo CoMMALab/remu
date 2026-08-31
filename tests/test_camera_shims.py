@@ -1,6 +1,7 @@
 import importlib.util
 import socket
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -136,3 +137,31 @@ def test_orbbec_gemini_device_identity_and_frame_number(monkeypatch):
         if pipeline is not None:
             pipeline.stop()
         server.stop()
+
+
+def test_attach_publishes_an_immutable_snapshot_without_rendering():
+    camera = _camera("realsense", "d435i", "snapshot")
+    camera.render = lambda _model, _data: pytest.fail("rendered on the physics thread")
+    data = SimpleNamespace(
+        qpos=np.arange(9, dtype=float),
+        mocap_pos=np.arange(3, dtype=float).reshape(1, 3),
+        mocap_quat=np.array([[1.0, 0.0, 0.0, 0.0]]),
+        time=1.25,
+    )
+    sim = SimpleNamespace(
+        model=None, data=data, on_step_callbacks=[], scene_xml_path=Path("unused.xml")
+    )
+    server = CameraServer([camera]).attach(sim)
+
+    sim.on_step_callbacks[0](None, data)
+    qpos, mocap_pos, mocap_quat, sim_time = server._latest_state
+    data.qpos[:] = -1
+    data.mocap_pos[:] = -1
+    data.mocap_quat[:] = -1
+
+    assert qpos.tolist() == list(range(9))
+    assert mocap_pos.tolist() == [[0.0, 1.0, 2.0]]
+    assert mocap_quat.tolist() == [[1.0, 0.0, 0.0, 0.0]]
+    assert sim_time == 1.25
+    server.stop()
+    assert sim.on_step_callbacks == []
