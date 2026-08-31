@@ -148,6 +148,9 @@ class EmulatedRgbdCamera:
         min_depth_m: float = 0.105,
         max_depth_m: float = 10.0,
         depth_scale: float = DEPTH_SCALE,
+        ip: Optional[str] = None,
+        port: Optional[int] = None,
+        network_only: bool = False,
     ):
         self.vendor = vendor
         self.model = model
@@ -161,6 +164,12 @@ class EmulatedRgbdCamera:
         self.min_depth_m = float(min_depth_m)
         self.max_depth_m = float(max_depth_m)
         self.depth_scale = float(depth_scale)
+        # Address a client dials to reach this device, for models opened
+        # with Context.create_net_device instead of USB enumeration.
+        # network_only devices are not offered on enumeration at all.
+        self.ip = ip
+        self.port = port
+        self.network_only = bool(network_only)
 
         safe_serial = re.sub(r"[^A-Za-z0-9_]", "_", self.serial)
         self.mjcf_camera_name = f"remu_cam_{safe_serial}"
@@ -261,6 +270,9 @@ class EmulatedRgbdCamera:
             "depth_scale": self.depth_scale,
             "color": self.color_profile.to_dict(),
             "depth": self.depth_profile.to_dict(),
+            "ip": self.ip,
+            "port": self.port,
+            "network_only": self.network_only,
         }
 
     def close(self) -> None:

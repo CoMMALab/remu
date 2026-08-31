@@ -76,7 +76,8 @@ is physics-backed and appears in both the native and Viser viewers by default.
 Camera YAML version 1 declares any number of mixed `realsense/d435i`,
 `orbbec/femto_mega`, and Orbbec Gemini devices. Supported Gemini model keys are
 `gemini_2`, `gemini_2_l`, `gemini_330`, `gemini_330l`, `gemini_335`,
-`gemini_335l`, `gemini_336`, and `gemini_336l`. A rig can be supplied by `--camera-config`, or placed
+`gemini_335l`, `gemini_336`, `gemini_336l`, and the Ethernet-only
+`gemini_435le`. A rig can be supplied by `--camera-config`, or placed
 under `camera_rig` in the unified run configuration. See
 [`configs/cameras.example.yaml`](configs/cameras.example.yaml) and the
 end-effector-mounted example in
@@ -85,6 +86,12 @@ end-effector-mounted example in
 Each camera entry has:
 
 - `vendor`, `model`, and a globally unique `serial`.
+- `ip`, and optionally `port` (default 8090), for a device the client opens
+  with `Context.create_net_device(ip, port)` rather than by USB
+  enumeration. Required for `gemini_435le`, which has no USB mode at all;
+  accepted for `femto_mega`, which offers both; rejected for everything
+  else, so a rig that could never reach its device fails at load time
+  instead of timing out on the first frame.
 - `parent_body`, the MuJoCo body/link that carries this camera. If omitted, it
   inherits the rig-level `robot_base_body`. Different cameras may name
   different links, such as `fr3_link0`, `fr3_link7`, or `fr3_hand`.

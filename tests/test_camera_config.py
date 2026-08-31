@@ -60,6 +60,46 @@ def test_orbbec_gemini_models_are_supported(model, name):
     assert camera.device_name == name
 
 
+def _gemini_435le(**overrides):
+    """A rig whose second camera is the Ethernet-only 435Le."""
+    value = _config()
+    value["cameras"][1].update(
+        vendor="orbbec", model="gemini_435le", serial="CP4A55D000F"
+    )
+    value["cameras"][1].update(overrides)
+    return value
+
+
+def test_network_device_carries_its_address_and_defaults_the_sdk_port():
+    camera = parse_camera_config(_gemini_435le(ip="192.168.50.11")).cameras[1]
+
+    assert camera.device_name == "Orbbec Gemini 435Le"
+    assert (camera.ip, camera.port) == ("192.168.50.11", 8090)
+    assert camera.network_only is True
+
+
+def test_ethernet_only_model_is_rejected_without_an_address():
+    with pytest.raises(ValueError, match="requires an `ip`"):
+        parse_camera_config(_gemini_435le())
+
+
+def test_address_is_rejected_on_a_model_with_no_network_transport():
+    value = _config()
+    value["cameras"][0]["ip"] = "192.168.50.11"
+    with pytest.raises(ValueError, match="no network transport"):
+        parse_camera_config(value)
+
+
+def test_duplicate_network_addresses_are_rejected():
+    value = _gemini_435le(ip="192.168.50.11")
+    value["cameras"][0].update(
+        vendor="orbbec", model="femto_mega", serial="CL25854007B",
+        ip="192.168.50.11", port=8090,
+    )
+    with pytest.raises(ValueError, match="duplicate camera address"):
+        parse_camera_config(value)
+
+
 def test_each_camera_can_override_the_rig_parent_body():
     value = _config()
     value["cameras"][0]["parent_body"] = "fr3_hand"

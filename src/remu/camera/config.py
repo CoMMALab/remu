@@ -18,6 +18,13 @@ class CameraRigConfig:
     cameras: tuple[EmulatedRgbdCamera, ...]
 
 
+# The port Orbbec's SDK dials for a network device, and what
+# Context.create_net_device defaults to. Mirrors fr3-teleop's
+# DEFAULT_ORBBEC_NET_PORT -- the two tables have to agree, or a rig that
+# validates on one side is unreachable from the other.
+DEFAULT_NET_PORT = 8090
+
+
 _MODELS = {
     ("realsense", "d435i"): {
         "name": "Intel RealSense D435I",
@@ -32,6 +39,26 @@ _MODELS = {
         "depth_fovy": 65.0,
         "min_depth": 0.25,
         "max_depth": 5.46,
+        # Dual-transport: USB-C or Ethernet, and reachable both ways at
+        # once (confirmed live on CL25854007B, which answers enumeration
+        # and create_net_device simultaneously).
+        "network": True,
+    },
+    ("orbbec", "gemini_435le"): {
+        "name": "Orbbec Gemini 435Le",
+        # Measured live against control-node-2's unit (serial CP4A55D000F)
+        # at its default 1280x800 profile: fovy = 2*atan(height/2/fy).
+        "color_fovy": 66.3,
+        "depth_fovy": 65.8,
+        # From Orbbec's datasheet rather than a live reading: the device
+        # reports OB_PROP_{MIN,MAX}_DEPTH_INT as unsupported over Ethernet.
+        "min_depth": 0.25,
+        "max_depth": 6.0,
+        # No USB mode at all, which is the whole reason the rig has to
+        # carry an address: this device is opened with
+        # create_net_device(ip, port) and never appears on USB enumeration.
+        "network": True,
+        "network_only": True,
     },
     ("orbbec", "gemini_2"): {
         "name": "Orbbec Gemini 2",
@@ -130,6 +157,7 @@ def parse_camera_config(value: dict) -> CameraRigConfig:
 
     cameras = []
     identities = set()
+    addresses = set()
     for index, raw in enumerate(entries):
         where = f"cameras[{index}]"
         entry = _mapping(raw, where)
@@ -147,6 +175,29 @@ def parse_camera_config(value: dict) -> CameraRigConfig:
         if identity in identities:
             raise ValueError(f"duplicate camera serial {serial}")
         identities.add(identity)
+
+        # A network device is opened by address, not by USB enumeration, so
+        # the rig has to carry the address the client will dial. Validating
+        # it here means a rig that cannot possibly reach its device fails at
+        # load time rather than as a timeout on the first frame.
+        ip = entry.get("ip")
+        if ip is not None and (not isinstance(ip, str) or not ip):
+            raise ValueError(f"{where}.ip must be a non-empty string when provided")
+        if ip is not None and not descriptor.get("network"):
+            raise ValueError(
+                f"{where} is {vendor}/{model}, which has no network transport; remove `ip`"
+            )
+        if ip is None and descriptor.get("network_only"):
+            raise ValueError(
+                f"{where} is {vendor}/{model}, which has no USB mode; it requires an `ip`"
+            )
+        port = None
+        if ip is not None:
+            port = _positive_int(entry.get("port", DEFAULT_NET_PORT), f"{where}.port")
+            if (ip, port) in addresses:
+                raise ValueError(f"duplicate camera address {ip}:{port}")
+            addresses.add((ip, port))
+
         parent_body = entry.get("parent_body", base_body)
         if not isinstance(parent_body, str) or not parent_body:
             raise ValueError(
@@ -179,6 +230,9 @@ def parse_camera_config(value: dict) -> CameraRigConfig:
             parent_body=parent_body,
             min_depth_m=descriptor["min_depth"],
             max_depth_m=descriptor["max_depth"],
+            ip=ip,
+            port=port,
+            network_only=bool(descriptor.get("network_only")),
         ))
     return CameraRigConfig(base_body, tuple(cameras))
 
