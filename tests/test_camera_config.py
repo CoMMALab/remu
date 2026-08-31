@@ -118,6 +118,25 @@ def test_configured_camera_is_attached_to_named_robot_body(tmp_path):
         scene.unlink(missing_ok=True)
 
 
+def test_scene_offscreen_framebuffer_fits_largest_camera(tmp_path):
+    robot = tmp_path / "robot.xml"
+    robot.write_text(
+        """<mujoco><worldbody><body name="fr3_link0"/></worldbody></mujoco>"""
+    )
+    camera = parse_camera_config(_config()).cameras[1]
+    scene = build_scene_xml(
+        robot_mjcf=robot, cameras=[camera], add_ground=False, add_gripper=False
+    )
+    try:
+        model = mujoco.MjModel.from_xml_path(str(scene))
+        assert model.vis.global_.offwidth >= camera.color_profile.width
+        assert model.vis.global_.offheight >= camera.color_profile.height
+        assert model.vis.global_.offwidth >= camera.depth_profile.width
+        assert model.vis.global_.offheight >= camera.depth_profile.height
+    finally:
+        scene.unlink(missing_ok=True)
+
+
 def test_missing_configured_base_body_is_reported(tmp_path):
     robot = tmp_path / "robot.xml"
     robot.write_text('<mujoco><worldbody/></mujoco>')

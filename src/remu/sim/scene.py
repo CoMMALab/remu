@@ -164,6 +164,7 @@ def build_scene_xml(
     if not robot_path.exists():
         raise FileNotFoundError(f"Robot MJCF not found: {robot_path}")
     hand_path = Path(hand_mjcf) if hand_mjcf is not None else None
+    cameras = tuple(cameras)
 
     root = _scene_root(robot_path, add_gripper, hand_path)
 
@@ -178,7 +179,21 @@ def build_scene_xml(
         specular="0 0 0",
     )
     _upsert(visual, "rgba", haze="0.15 0.25 0.35 1")
-    _upsert(visual, "global", azimuth="120", elevation="-20")
+    global_visual = _upsert(visual, "global", azimuth="120", elevation="-20")
+    if cameras:
+        profiles = [
+            profile
+            for camera in cameras
+            for profile in (camera.color_profile, camera.depth_profile)
+        ]
+        offwidth = max(
+            int(global_visual.get("offwidth", "0")), *(p.width for p in profiles)
+        )
+        offheight = max(
+            int(global_visual.get("offheight", "0")), *(p.height for p in profiles)
+        )
+        global_visual.set("offwidth", str(offwidth))
+        global_visual.set("offheight", str(offheight))
 
     asset = root.find("asset")
     if asset is None:
