@@ -13,6 +13,21 @@ import numpy as np
 from PIL import Image
 
 
+
+def _link_eye_tf(group):
+    """The camera-to-link transform recorded beside the frames, or ``None``.
+
+    Two compatibilities at once. The dataset was called ``base_from_optical``
+    in files written before the rename, and it is written only for cameras that
+    had a calibration -- so an unconditional lookup raised KeyError on any
+    uncalibrated camera, which is what this used to do.
+    """
+    for key in ("link_eye_tf", "base_from_optical"):
+        if key in group:
+            return group[key][:].tolist()
+    return None
+
+
 def _camera_groups(capture: h5py.File):
     cameras = capture.get("cameras")
     if cameras is None:
@@ -119,7 +134,7 @@ def export_episode(source: str | Path, destination: str | Path, *, overwrite: bo
                     "rotate_deg": 0,
                     "depth_enabled": False,
                     "source_depth_in_hdf5": "depth" in group,
-                    "base_from_optical": group["base_from_optical"][:].tolist(),
+                    "link_eye_tf": _link_eye_tf(group),
                 }
 
             duration = float(time_s[-1] - start_s)

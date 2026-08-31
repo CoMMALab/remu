@@ -8,7 +8,7 @@ cameras:
     # Optional per-camera override; otherwise robot_base_body above is used.
     parent_body: fr3_link0
     # Maps optical-frame points (+x right, +y down, +z forward) into fr3_link0.
-    base_from_optical:
+    link_eye_tf:
       - [0.0, 0.242536, -0.970143, 1.0]
       - [-1.0, 0.0, 0.0, 0.0]
       - [0.0, 0.970143, 0.242536, 0.6]
@@ -21,7 +21,7 @@ cameras:
   - vendor: orbbec
     model: femto_mega
     serial: "FM000001"
-    base_from_optical:
+    link_eye_tf:
       - [0.0, 0.242536, -0.970143, 1.0]
       - [-1.0, 0.0, 0.0, -0.5]
       - [0.0, 0.970143, 0.242536, 0.8]

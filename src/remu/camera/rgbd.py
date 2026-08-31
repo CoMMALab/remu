@@ -140,7 +140,7 @@ class EmulatedRgbdCamera:
         model: str,
         serial: str,
         device_name: str,
-        base_from_optical: Sequence[Sequence[float]],
+        link_eye_tf: Sequence[Sequence[float]],
         color: StreamProfile,
         depth: StreamProfile,
         fps: int,
@@ -156,7 +156,7 @@ class EmulatedRgbdCamera:
         self.model = model
         self.serial = str(serial)
         self.device_name = device_name
-        self.base_from_optical = np.asarray(base_from_optical, dtype=float)
+        self.link_eye_tf = np.asarray(link_eye_tf, dtype=float)
         self.color_profile = color
         self.depth_profile = depth
         self.fps = int(fps)
@@ -203,10 +203,10 @@ class EmulatedRgbdCamera:
         return f"{self.vendor}/{self.serial}"
 
     def optical_pose(self) -> np.ndarray:
-        return self.base_from_optical.copy()
+        return self.link_eye_tf.copy()
 
     def pose(self) -> np.ndarray:
-        return self.base_from_optical @ np.diag([1.0, -1.0, -1.0, 1.0])
+        return self.link_eye_tf @ np.diag([1.0, -1.0, -1.0, 1.0])
 
     def mjcf_body(self) -> str:
         mujoco_pose = self.pose()

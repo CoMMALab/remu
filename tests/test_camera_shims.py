@@ -28,7 +28,7 @@ def _camera(vendor, model, serial, color_size=(4, 3), depth_size=(2, 2)):
     camera = EmulatedRgbdCamera(
         vendor=vendor, model=model, serial=serial,
         device_name="Intel RealSense D435I" if vendor == "realsense" else "Orbbec Femto Mega",
-        base_from_optical=np.eye(4),
+        link_eye_tf=np.eye(4),
         color=StreamProfile(*color_size, "rgb8", 50.0),
         depth=StreamProfile(*depth_size, "z16", 60.0),
         fps=15,

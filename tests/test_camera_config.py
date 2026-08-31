@@ -14,7 +14,7 @@ def _config():
         "robot_base_body": "fr3_link0",
         "cameras": [{
             "vendor": "realsense", "model": "d435i", "serial": "rs1",
-            "base_from_optical": np.eye(4).tolist(),
+            "link_eye_tf": np.eye(4).tolist(),
             "pipeline": {
                 "fps": 30,
                 "color": {"width": 640, "height": 480, "format": "rgb8"},
@@ -22,7 +22,7 @@ def _config():
             },
         }, {
             "vendor": "orbbec", "model": "femto_mega", "serial": "fm1",
-            "base_from_optical": np.eye(4).tolist(),
+            "link_eye_tf": np.eye(4).tolist(),
             "pipeline": {
                 "fps": 15,
                 "color": {"width": 1280, "height": 720, "format": "rgb8"},
@@ -100,6 +100,28 @@ def test_duplicate_network_addresses_are_rejected():
         parse_camera_config(value)
 
 
+def test_the_previous_key_name_is_still_read():
+    """`link_eye_tf` was `base_from_optical`. Rigs written against the old name
+    keep loading, the way recording.root still answers to staging_root."""
+    value = _config()
+    for camera in value["cameras"]:
+        camera["base_from_optical"] = camera.pop("link_eye_tf")
+
+    rig = parse_camera_config(value)
+
+    assert rig.cameras[0].link_eye_tf.shape == (4, 4)
+    assert np.allclose(rig.cameras[0].link_eye_tf, np.eye(4))
+
+
+def test_a_camera_with_neither_name_is_rejected_under_the_new_one():
+    value = _config()
+    for camera in value["cameras"]:
+        camera.pop("link_eye_tf")
+
+    with pytest.raises(ValueError, match="link_eye_tf"):
+        parse_camera_config(value)
+
+
 def test_each_camera_can_override_the_rig_parent_body():
     value = _config()
     value["cameras"][0]["parent_body"] = "fr3_hand"
@@ -115,7 +137,7 @@ def test_each_camera_can_override_the_rig_parent_body():
     (lambda value: value.update(version=2), "version"),
     (lambda value: value["cameras"][0].update(model="unknown"), "unsupported"),
     (lambda value: value["cameras"][0]["pipeline"].update(fps=0), "positive"),
-    (lambda value: value["cameras"][0].update(base_from_optical=[[1, 0], [0, 1]]), "4x4"),
+    (lambda value: value["cameras"][0].update(link_eye_tf=[[1, 0], [0, 1]]), "4x4"),
 ])
 def test_invalid_camera_config_is_rejected(mutation, match):
     value = _config()
@@ -133,7 +155,7 @@ def test_duplicate_serials_are_rejected_across_vendors():
 
 def test_pose_must_be_a_rigid_right_handed_transform():
     value = copy.deepcopy(_config())
-    value["cameras"][0]["base_from_optical"][0][0] = 2.0
+    value["cameras"][0]["link_eye_tf"][0][0] = 2.0
     with pytest.raises(ValueError, match="orthonormal"):
         parse_camera_config(value)
 

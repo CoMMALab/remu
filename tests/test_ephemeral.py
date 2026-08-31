@@ -91,7 +91,7 @@ def test_parallel_chunk_boundaries_match_single_worker(tmp_path):
 
     camera = EmulatedRgbdCamera(
         vendor="realsense", model="d435i", serial="parallel-test", device_name="test",
-        base_from_optical=[[1, 0, 0, 1], [0, 1, 0, 0], [0, 0, 1, 0.6], [0, 0, 0, 1]],
+        link_eye_tf=[[1, 0, 0, 1], [0, 1, 0, 0], [0, 0, 1, 0.6], [0, 0, 0, 1]],
         color=StreamProfile(32, 24, "rgb8", 42.5),
         depth=StreamProfile(32, 24, "z16", 58.0),
         fps=30, parent_body="fr3_link0",
@@ -163,7 +163,7 @@ def test_export_fr3_teleop_staging_layout(tmp_path):
         camera.create_dataset("trajectory_index", data=[0, 2])
         camera.create_dataset("color", data=np.full((2, 3, 4, 3), 127, dtype=np.uint8))
         camera.create_dataset("depth", data=np.full((2, 3, 4), 500, dtype=np.uint16))
-        camera.create_dataset("base_from_optical", data=np.eye(4))
+        camera.create_dataset("link_eye_tf", data=np.eye(4))
         camera.attrs["device"] = json.dumps({"model": "d435i"})
 
     output = export_episode(source, tmp_path / "episode")

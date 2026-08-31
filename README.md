@@ -95,10 +95,12 @@ Each camera entry has:
 - `parent_body`, the MuJoCo body/link that carries this camera. If omitted, it
   inherits the rig-level `robot_base_body`. Different cameras may name
   different links, such as `fr3_link0`, `fr3_link7`, or `fr3_hand`.
-- `base_from_optical`, a rigid 4x4 transform from the camera optical frame into
-  `parent_body`. Optical coordinates follow the SDK convention: +x right, +y
-  down, and +z forward. Despite the historical field name, this transform is
-  relative to `parent_body`, not necessarily the robot base.
+- `link_eye_tf`, a rigid 4x4 transform from the camera optical frame into
+  `parent_body` -- the link, not the base, which is what the name says. Optical
+  coordinates follow the SDK convention: +x right, +y down, +z forward, so a
+  hand-eye result from `cv2.calibrateHandEye` drops in unchanged as long as its
+  reference frame is the link named in `parent_body`. Files still using the old
+  `base_from_optical` name are read as before.
 - One `pipeline` FPS and color/depth stream descriptions. Color is `rgb8`,
   depth is `z16`; the two streams may use different resolutions.
 

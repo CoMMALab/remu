@@ -47,7 +47,7 @@ class EmulatedD435i(EmulatedRgbdCamera):
             model="d435i",
             serial=serial,
             device_name="Intel RealSense D435I",
-            base_from_optical=optical_pose_from_look_at(self.eye, self.target, self.up),
+            link_eye_tf=optical_pose_from_look_at(self.eye, self.target, self.up),
             color=StreamProfile(width, height, "rgb8", fovy_deg),
             depth=StreamProfile(width, height, "z16", fovy_deg),
             fps=fps,

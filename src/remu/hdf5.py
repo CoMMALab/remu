@@ -121,7 +121,7 @@ def export_hdf5(
                 )
                 if camera_name in calibration:
                     group.create_dataset(
-                        "base_from_optical", data=np.asarray(calibration[camera_name])
+                        "link_eye_tf", data=np.asarray(calibration[camera_name])
                     )
                 group.attrs["device"] = json.dumps({"name": camera_name}, sort_keys=True)
         os.replace(partial, destination)

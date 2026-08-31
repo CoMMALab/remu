@@ -223,7 +223,13 @@ def parse_camera_config(value: dict) -> CameraRigConfig:
             model=model,
             serial=serial,
             device_name=descriptor["name"],
-            base_from_optical=_pose(entry.get("base_from_optical"), f"{where}.base_from_optical"),
+            link_eye_tf=_pose(
+                # `base_from_optical` was this key's name until it grew a
+                # parent_body: the transform is into whatever link carries
+                # the camera, which is only the base when nothing else does.
+                entry.get("link_eye_tf", entry.get("base_from_optical")),
+                f"{where}.link_eye_tf",
+            ),
             color=color,
             depth=depth,
             fps=fps,
