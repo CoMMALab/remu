@@ -30,7 +30,7 @@ src/remu/
   protocol/   libfranka wire format: Command enums, message structs, RobotState packing
   sim/        MuJoCo physics backend (MujocoSim) + scene composition (build_scene_xml)
   server/     Arm server (TCP 1337) and Franka Hand server (TCP 1338)
-  camera/     Configurable RealSense/Femto Mega RGB-D rendering + frame server
+  camera/     Configurable RealSense/Orbbec RGB-D rendering + frame server
   viewer/     MujocoPassiveViewer (native) and ViserViewer (browser, via mjviser)
   cli.py      `remu` command-line entry point
   models/     fr3.urdf served to clients via GetRobotModel
@@ -73,8 +73,10 @@ is physics-backed and appears in both the native and Viser viewers by default.
 
 ## Camera configuration
 
-Camera YAML version 1 declares any number of mixed `realsense/d435i` and
-`orbbec/femto_mega` devices. It can be supplied by `--camera-config`, or placed
+Camera YAML version 1 declares any number of mixed `realsense/d435i`,
+`orbbec/femto_mega`, and Orbbec Gemini devices. Supported Gemini model keys are
+`gemini_2`, `gemini_2_l`, `gemini_330`, `gemini_330l`, `gemini_335`,
+`gemini_335l`, `gemini_336`, and `gemini_336l`. A rig can be supplied by `--camera-config`, or placed
 under `camera_rig` in the unified run configuration. See
 [`configs/cameras.example.yaml`](configs/cameras.example.yaml) and the
 end-effector-mounted example in

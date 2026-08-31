@@ -40,6 +40,26 @@ def test_mixed_camera_config_builds_model_specific_devices():
     assert rig.cameras[1].depth_profile.fovy_deg == 120.0
     assert rig.cameras[1].parent_body == "fr3_link0"
 
+@pytest.mark.parametrize("model, name", [
+    ("gemini_2", "Orbbec Gemini 2"),
+    ("gemini_2_l", "Orbbec Gemini 2 L"),
+    ("gemini_330", "Orbbec Gemini 330"),
+    ("gemini_330l", "Orbbec Gemini 330L"),
+    ("gemini_335", "Orbbec Gemini 335"),
+    ("gemini_335l", "Orbbec Gemini 335L"),
+    ("gemini_336", "Orbbec Gemini 336"),
+    ("gemini_336l", "Orbbec Gemini 336L"),
+])
+def test_orbbec_gemini_models_are_supported(model, name):
+    value = _config()
+    value["cameras"][1]["model"] = model
+
+    camera = parse_camera_config(value).cameras[1]
+
+    assert camera.model == model
+    assert camera.device_name == name
+
+
 def test_each_camera_can_override_the_rig_parent_body():
     value = _config()
     value["cameras"][0]["parent_body"] = "fr3_hand"

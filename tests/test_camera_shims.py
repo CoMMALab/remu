@@ -109,3 +109,30 @@ def test_orbbec_v2_pipeline_profiles_frames_alignment_and_points(shim_server):
         assert points.shape == (12, 6)
     finally:
         pipeline.stop()
+
+
+def test_orbbec_gemini_device_identity_and_frame_number(monkeypatch):
+    camera = _camera("orbbec", "gemini_335", "G335-one")
+    camera.device_name = "Orbbec Gemini 335"
+    port = _free_port()
+    server = CameraServer([camera], host="127.0.0.1", port=port).start()
+    server._render_one(camera, None, None)
+    monkeypatch.setenv("REMU_CAMERA_ADDR", f"127.0.0.1:{port}")
+    ob = _load("_test_ob_gemini", "pyorbbecsdk.py")
+    pipeline = None
+
+    try:
+        device = ob.Context().query_devices()[0]
+        info = device.get_device_info()
+        assert info.get_name() == "Orbbec Gemini 335"
+        assert info.get_uid() == "G335-one"
+        assert info.get_pid() != 0x0669
+
+        pipeline = ob.Pipeline(device)
+        pipeline.start()
+        frame = pipeline.wait_for_frames(1000).get_color_frame()
+        assert frame.get_frame_number() == 1
+    finally:
+        if pipeline is not None:
+            pipeline.stop()
+        server.stop()

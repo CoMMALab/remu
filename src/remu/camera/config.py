@@ -33,7 +33,41 @@ _MODELS = {
         "min_depth": 0.25,
         "max_depth": 5.46,
     },
+    ("orbbec", "gemini_2"): {
+        "name": "Orbbec Gemini 2",
+        "color_fovy": 55.0,
+        "depth_fovy": 66.0,
+        "min_depth": 0.15,
+        "max_depth": 10.0,
+    },
+    ("orbbec", "gemini_2_l"): {
+        "name": "Orbbec Gemini 2 L",
+        "color_fovy": 55.0,
+        "depth_fovy": 66.0,
+        "min_depth": 0.15,
+        "max_depth": 10.0,
+    },
 }
+
+
+# The 330-series devices expose the same RGB-D API and are interchangeable
+# from the shim point of view. Keep each model explicit so device metadata
+# still matches what applications select in their hardware configuration.
+for _model, _display_name in {
+    "gemini_330": "Gemini 330",
+    "gemini_330l": "Gemini 330L",
+    "gemini_335": "Gemini 335",
+    "gemini_335l": "Gemini 335L",
+    "gemini_336": "Gemini 336",
+    "gemini_336l": "Gemini 336L",
+}.items():
+    _MODELS[("orbbec", _model)] = {
+        "name": f"Orbbec {_display_name}",
+        "color_fovy": 68.0,
+        "depth_fovy": 65.0,
+        "min_depth": 0.15,
+        "max_depth": 20.0,
+    }
 
 
 def _mapping(value, where: str) -> dict:

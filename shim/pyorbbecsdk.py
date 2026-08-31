@@ -1,7 +1,7 @@
 """Small Orbbec SDK v2-compatible facade backed by remu's camera server.
 
 Place this directory first on ``PYTHONPATH`` so ``import pyorbbecsdk`` uses
-the simulated Femto Mega devices declared in remu's camera YAML.
+the simulated Femto Mega or Gemini devices declared in remu's camera YAML.
 """
 
 import importlib.util
@@ -89,10 +89,18 @@ class DeviceInfo:
         return 0x2BC5
 
     def get_pid(self):
-        return 0x0669
+        # Product IDs are informational in the emulator. Keep Gemini distinct
+        # so applications do not classify it as a Femto Mega.
+        return 0x0800 if self._info["model"].startswith("gemini") else 0x0669
 
     def get_firmware_version(self):
         return "2.0.0-remu"
+
+    def get_uid(self):
+        return self.get_serial_number()
+
+    def get_connection_type(self):
+        return "Ethernet" if os.environ.get("REMU_CAMERA_ADDR") else "USB3.0"
 
 
 class Device:
@@ -244,6 +252,9 @@ class _Frame:
         return int(self._timestamp_ms * 1000)
 
     def get_index(self):
+        return self._frame_number
+
+    def get_frame_number(self):
         return self._frame_number
 
     def get_stream_profile(self):
