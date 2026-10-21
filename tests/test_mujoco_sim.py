@@ -161,3 +161,46 @@ def test_ee_pose_is_valid_homogeneous_transform(sim):
     assert np.allclose(O_T_EE[3, :], [0, 0, 0, 1])
     R = O_T_EE[:3, :3]
     assert np.allclose(R.T @ R, np.eye(3), atol=1e-4)
+
+
+# Franka's modified (Craig) DH parameters for the FR3: (a_{i-1}, d_i, alpha_{i-1}), joints 1..7,
+# then the flange 0.107 m along joint 7 -- the frame libfranka reports as O_T_EE when F_T_EE is
+# the identity.
+_FR3_DH = (
+    (0.0, 0.333, 0.0),
+    (0.0, 0.0, -np.pi / 2),
+    (0.0, 0.316, np.pi / 2),
+    (0.0825, 0.0, np.pi / 2),
+    (-0.0825, 0.384, -np.pi / 2),
+    (0.0, 0.0, np.pi / 2),
+    (0.088, 0.0, np.pi / 2),
+)
+
+
+def _fr3_flange(q):
+    T = np.eye(4)
+    for (a, d, alpha), theta in zip(_FR3_DH, q):
+        ca, sa, ct, st = np.cos(alpha), np.sin(alpha), np.cos(theta), np.sin(theta)
+        T = T @ np.array([[ct, -st, 0.0, a],
+                          [st * ca, ct * ca, -sa, -d * sa],
+                          [st * sa, ct * sa, ca, d * ca],
+                          [0.0, 0.0, 0.0, 1.0]])
+    flange = np.eye(4)
+    flange[2, 3] = 0.107
+    return T @ flange
+
+
+def test_ee_pose_is_the_flange(sim):
+    """O_T_EE must match libfranka's: the flange, 107 mm past joint 7, not link7's origin."""
+    poses = [sim.home_q, sim.home_q + np.array([0.4, 0.2, -0.3, 0.3, 0.5, -0.2, 0.6])]
+    for target in poses:
+        sim.update_joint_positions(target)
+        sim.set_control_mode(ControlMode.POSITION)
+        for _ in range(1500):
+            sim.step()
+        state = sim.get_robot_state()
+        O_T_EE = state["O_T_EE"].reshape(4, 4).T
+        expected = _fr3_flange(state["q"])
+        assert np.allclose(O_T_EE[:3, 3], expected[:3, 3], atol=1e-4)
+        assert np.allclose(O_T_EE[:3, :3], expected[:3, :3], atol=1e-4)
+

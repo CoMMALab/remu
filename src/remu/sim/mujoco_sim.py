@@ -32,6 +32,10 @@ DEFAULT_KP = np.array([600.0, 600.0, 600.0, 600.0, 250.0, 150.0, 50.0])
 DEFAULT_KD = np.array([50.0, 50.0, 50.0, 50.0, 15.0, 10.0, 5.0])
 DEFAULT_KD_VELOCITY = np.array([20.0, 20.0, 20.0, 20.0, 10.0, 8.0, 5.0])
 
+# Joint 7 to the flange along its axis (m): libfranka's O_T_EE is the flange pose
+# composed with F_T_EE (the identity here). The menagerie FR3's attachment_site.
+FR3_FLANGE_OFFSET = 0.107
+
 # FR3 actuator torque limits (J1-4: +/-87 Nm, J5-7: +/-12 Nm).
 DEFAULT_TORQUE_LIMITS = np.array([87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0])
 
@@ -458,8 +462,9 @@ class MujocoSim:
         self._ddq_filtered = self._alpha_acc * self._ddq_filtered + (1 - self._alpha_acc) * ddq_raw
         self._prev_dq = dq.copy()
 
-        ee_pos = self.data.xpos[self._ee_body_id].copy()
         ee_mat = self.data.xmat[self._ee_body_id].reshape(3, 3).copy()
+        # link7's frame is at joint 7; the flange is FR3_FLANGE_OFFSET along its z.
+        ee_pos = self.data.xpos[self._ee_body_id] + ee_mat[:, 2] * FR3_FLANGE_OFFSET
         O_T_EE = np.eye(4)
         O_T_EE[:3, :3] = ee_mat
         O_T_EE[:3, 3] = ee_pos
