@@ -204,3 +204,17 @@ def test_ee_pose_is_the_flange(sim):
         assert np.allclose(O_T_EE[:3, 3], expected[:3, 3], atol=1e-4)
         assert np.allclose(O_T_EE[:3, :3], expected[:3, :3], atol=1e-4)
 
+
+def test_velocity_control_tracks_its_integrated_command(sim):
+    """In velocity mode the arm follows q_d -- the integrated, limited command -- back to rest,
+    instead of drifting off it: the FR3 tracks (q_d, dq_d) with its joint impedance."""
+    sim.set_control_mode(ControlMode.VELOCITY)
+    sim.update_joint_velocities(np.array([0.4, -0.3, 0.0, 0.5, 0.0, 0.3, 0.0]))
+    for _ in range(600):
+        sim.step()
+    sim.update_joint_velocities(np.zeros(7))
+    for _ in range(800):
+        sim.step()
+    state = sim.get_robot_state()
+    assert np.abs(state["q_d"] - sim.home_q).max() > 0.15          # it moved
+    assert np.abs(state["q"] - state["q_d"]).max() < 2e-3          # and settled on q_d

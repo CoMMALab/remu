@@ -30,7 +30,6 @@ DEFAULT_HOME_Q = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
 # joint impedance controller; override via MujocoSim(kp=..., kd=...).
 DEFAULT_KP = np.array([600.0, 600.0, 600.0, 600.0, 250.0, 150.0, 50.0])
 DEFAULT_KD = np.array([50.0, 50.0, 50.0, 50.0, 15.0, 10.0, 5.0])
-DEFAULT_KD_VELOCITY = np.array([20.0, 20.0, 20.0, 20.0, 10.0, 8.0, 5.0])
 
 # Joint 7 to the flange along its axis (m): libfranka's O_T_EE is the flange pose
 # composed with F_T_EE (the identity here). The menagerie FR3's attachment_site.
@@ -80,7 +79,6 @@ class MujocoSim:
         dt: float = 0.001,
         kp: Optional[np.ndarray] = None,
         kd: Optional[np.ndarray] = None,
-        kd_velocity: Optional[np.ndarray] = None,
         torque_limits: Optional[np.ndarray] = None,
         home_q: Optional[np.ndarray] = None,
         realtime: bool = True,
@@ -92,9 +90,6 @@ class MujocoSim:
         self.dt = dt
         self.kp = np.asarray(kp if kp is not None else DEFAULT_KP, dtype=float)
         self.kd = np.asarray(kd if kd is not None else DEFAULT_KD, dtype=float)
-        self.kd_velocity = np.asarray(
-            kd_velocity if kd_velocity is not None else DEFAULT_KD_VELOCITY, dtype=float
-        )
         self.torque_limits = np.asarray(
             torque_limits if torque_limits is not None else DEFAULT_TORQUE_LIMITS, dtype=float
         )
@@ -405,7 +400,10 @@ class MujocoSim:
             lower_dq, upper_dq = self._position_velocity_limits(self._command_q)
             target_dq = np.clip(self.latest_joint_velocities, lower_dq, upper_dq)
             self._advance_joint_command(target_dq)
-            tau = self.kd_velocity * (self._command_dq - dq) + bias
+            # The FR3 integrates a velocity command into q_d and tracks (q_d, dq_d)
+            # with its joint impedance, as in position mode; damping alone would let
+            # the arm drift off q_d and never come back.
+            tau = self.kp * (self._command_q - q) + self.kd * (self._command_dq - dq) + bias
         elif mode == ControlMode.TORQUE:
             # Real FCI external-torque control applies the commanded torque
             # directly; the caller is responsible for any compensation.
