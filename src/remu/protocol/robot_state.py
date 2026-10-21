@@ -157,6 +157,11 @@ class RobotState:
             s["control_command_success_rate"],
         )
 
+    @property
+    def message_id(self) -> int:
+        """The id the next packed state will carry."""
+        return self._message_id
+
     def update(self):
         """Advance to the next state frame with a monotonic message_id."""
         self._message_id += 1

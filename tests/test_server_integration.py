@@ -6,7 +6,14 @@ import time
 import numpy as np
 import pytest
 
-from remu.protocol.franka_protocol import Command, ConnectStatus, MessageHeader, MoveStatus
+from remu.protocol.franka_protocol import (
+    Command,
+    ConnectStatus,
+    LibfrankaMotionGeneratorMode,
+    MessageHeader,
+    MoveStatus,
+    RobotMode,
+)
 from remu.server.franka_server import FrankaFciServer, _ROBOT_COMMAND_SIZE
 from remu.sim.mujoco_sim import MujocoSim
 
@@ -194,7 +201,7 @@ def test_move_and_position_command_moves_robot(running_server):
     sock.close()
 
 
-def _build_robot_command(message_id, q_c, dq_c=None, tau_J_d=None):
+def _build_robot_command(message_id, q_c, dq_c=None, tau_J_d=None, motion_finished=False):
     dq_c = dq_c if dq_c is not None else [0.0] * 7
     tau_J_d = tau_J_d if tau_J_d is not None else [0.0] * 7
     packet = struct.pack("<Q", message_id)
@@ -204,8 +211,88 @@ def _build_robot_command(message_id, q_c, dq_c=None, tau_J_d=None):
     packet += struct.pack("<6d", *([0.0] * 6))
     packet += struct.pack("<2d", *([0.0] * 2))
     packet += struct.pack("<B", 0)  # valid_elbow
-    packet += struct.pack("<B", 0)  # motion_generation_finished
+    packet += struct.pack("<B", int(motion_finished))  # motion_generation_finished
     packet += struct.pack("<7d", *tau_J_d)
     packet += struct.pack("<B", 0)  # torque_command_finished
     assert len(packet) == _ROBOT_COMMAND_SIZE
     return packet
+
+
+
+# The last fields of a RobotState packet: motion_generator_mode, controller_mode (B, B),
+# errors, reflex_reason (41B each), robot_mode (B), control_command_success_rate (d).
+_MODES_TAIL = struct.calcsize("<BB41B41BBd")
+
+
+def _start_velocity_motion(sock, command_id=3):
+    move_payload = struct.pack("<II", 0, 1)   # kJointImpedance, kJointVelocity
+    move_payload += struct.pack("<ddd", 0, 0, 0) + struct.pack("<ddd", 0, 0, 0)
+    sock.sendall(MessageHeader(Command.kMove, command_id, 12 + len(move_payload)).to_bytes()
+                 + move_payload)
+
+
+def _move_reply(sock):
+    header = MessageHeader.from_bytes(sock.recv(12))
+    (status,) = struct.unpack("<B3x", sock.recv(4))
+    assert header.command == Command.kMove
+    return header.command_id, status
+
+
+def test_motion_started_follows_a_state_in_the_new_mode(running_server):
+    """libfranka takes a state during a motion that isn't in the motion's mode as the motion
+    having failed, and then waits, with no timeout, for a reply that never comes. So when
+    kMotionStarted goes out, the newest state sent must already be in the new mode."""
+    server, _sim = running_server
+    packed, at_reply = {}, []
+    real_pack, real_reply = server.robot_state.pack_state, server._send_move_response
+
+    def pack_state():
+        st = server.robot_state.state
+        packed[st["message_id"]] = (st["motion_generator_mode"], st["robot_mode"])
+        return real_pack()
+
+    def send_move_response(client_socket, command_id, status):
+        if status == MoveStatus.kMotionStarted:
+            last_sent = server.robot_state.message_id - 1   # sent, then message_id advanced
+            at_reply.append(packed.get(last_sent))
+        real_reply(client_socket, command_id, status)
+
+    for trial in range(5):
+        sock = _connect(server)          # each connection makes a fresh RobotState
+        server.robot_state.pack_state = pack_state
+        server._send_move_response = send_move_response
+        sock.udp.settimeout(2.0)
+        _, server_udp_addr = sock.udp.recvfrom(4096)
+        _start_velocity_motion(sock)
+        assert _move_reply(sock) == (3, MoveStatus.kMotionStarted)
+        assert at_reply[-1] == (LibfrankaMotionGeneratorMode.kJointVelocity, RobotMode.kMove), \
+            f"trial {trial}: kMotionStarted went out after a state in mode {at_reply[-1]}"
+        sock.udp.sendto(_build_robot_command(1, q_c=[0.0] * 7, motion_finished=True),
+                        server_udp_addr)
+        sock.close()
+        time.sleep(0.1)
+
+
+def test_move_succeeds_only_when_the_motion_finishes(running_server):
+    """kSuccess answers a Move when the motion is over -- not while it is still running."""
+    server, sim = running_server
+    sock = _connect(server)
+    sock.udp.settimeout(2.0)
+    _, server_udp_addr = sock.udp.recvfrom(4096)
+    _start_velocity_motion(sock)
+    assert _move_reply(sock) == (3, MoveStatus.kMotionStarted)
+
+    sock.tcp.settimeout(0.0)
+    for i in range(1, 200):                # 0.2 s of zero-velocity commands
+        sock.udp.sendto(_build_robot_command(i, q_c=sim.home_q), server_udp_addr)
+        time.sleep(0.001)
+        try:
+            early = sock.tcp.recv(16)
+        except BlockingIOError:
+            continue
+        pytest.fail(f"a Move reply while the motion runs: {early!r}")
+    sock.tcp.settimeout(2.0)
+    sock.udp.sendto(_build_robot_command(200, q_c=sim.home_q, motion_finished=True),
+                    server_udp_addr)
+    assert _move_reply(sock) == (3, MoveStatus.kSuccess)
+    sock.close()

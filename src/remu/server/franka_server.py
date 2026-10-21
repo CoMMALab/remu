@@ -87,6 +87,7 @@ class FrankaFciServer:
         self.control_mode = ControlMode.NONE
 
         self.robot_state = RobotState()
+        self._state_sent = threading.Condition()   # notified after each state goes out
         self.urdf_string = Path(urdf_path or DEFAULT_URDF).read_text(encoding="utf-8")
 
         self._threads = []
@@ -176,6 +177,17 @@ class FrankaFciServer:
         header = MessageHeader(Command.kMove, command_id, total_size)
         client_socket.sendall(header.to_bytes() + struct.pack("<B3x", status.value))
 
+    def _wait_for_state_after_mode_change(self, timeout=0.1):
+        """Block until the state loop has sent a state packed after now. It packs, sends,
+        then advances message_id, so the state numbered (id at the change) + 1 was packed
+        after it, and it is out once message_id reaches + 2. Without a state loop (no client
+        UDP yet), give up after `timeout`."""
+        changed_at = self.robot_state.message_id
+        with self._state_sent:
+            self._state_sent.wait_for(
+                lambda: self.robot_state.message_id >= changed_at + 2, timeout=timeout
+            )
+
     def _handle_move_command(self, client_socket, header, payload):
         try:
             move_cmd = MoveCommand.from_bytes(payload)
@@ -208,6 +220,10 @@ class FrankaFciServer:
             self.sim.set_control_mode(ControlMode.TORQUE)
             self.control_mode = ControlMode.TORQUE
 
+        # libfranka takes any state during a motion that isn't in the motion's mode as the
+        # motion having failed, and then blocks (with no timeout) for a reply to the Move. So
+        # reply only once a state packed after the mode change has gone out.
+        self._wait_for_state_after_mode_change()
         self._send_move_response(client_socket, header.command_id, MoveStatus.kMotionStarted)
 
     def _handle_stop_move_command(self, client_socket, header):
@@ -380,16 +396,12 @@ class FrankaFciServer:
         self.client_address = client_address
         self.client_udp_port = client_udp_port
         self.transmitting_state = True
-        first_state_sent = False
 
         period = 0.001
         next_deadline = time.perf_counter()
 
         while self.running and self.connection_running and self.transmitting_state:
             sim_state = self.sim.get_robot_state()
-            if not first_state_sent:
-                self.robot_state.state["q_d"] = list(sim_state["q"])
-
             self.robot_state.state["q"] = list(sim_state["q"])
             self.robot_state.state["dq"] = list(sim_state["dq"])
             # Report the command trajectory after the simulator's FR3 limit
@@ -405,11 +417,9 @@ class FrankaFciServer:
                     self.robot_state.pack_state(), (client_address, client_udp_port)
                 )
 
-            if not first_state_sent and self.current_motion_id:
-                self._send_move_response(self.client_socket, self.current_motion_id, MoveStatus.kSuccess)
-                first_state_sent = True
-
-            self.robot_state.update()
+            with self._state_sent:
+                self.robot_state.update()
+                self._state_sent.notify_all()
 
             next_deadline += period
             remaining = next_deadline - time.perf_counter()
