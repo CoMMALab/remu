@@ -1,5 +1,8 @@
 references/
 .pytest_cache/
+.coverage
+htmlcov/
+build/
 __pycache__/
 */*.pyc
 */*.egg-info
@@ -7,3 +10,4 @@ __pycache__/
 # Ground-truth camera extrinsics, regenerated on every run of
 # scripts/run_fci_viser.py.
 calibration.remu.json
+yam_calibration.json

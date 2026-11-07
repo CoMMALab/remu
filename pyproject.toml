@@ -17,15 +17,19 @@ dependencies = [
 [project.optional-dependencies]
 viser = ["mjviser", "viser"]
 dev = ["pytest", "pytest-timeout"]
+yam = ["mujoco>=3.3.5", "portal==3.7.3"]
 
 [project.scripts]
 remu = "remu.cli:main"
+remu-yam = "remu.yam.cli:main"
+remu-yam-world = "remu.yam.world_cli:main"
+remu-yam-bimanual = "remu.yam.bimanual:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-remu = ["models/*.urdf", "models/*.c"]
+remu = ["models/*.urdf", "models/*.c", "models/yam/*", "models/yam/assets/*.stl", "models/yam/objects/*.xml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

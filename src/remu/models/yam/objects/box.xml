@@ -1,0 +1,8 @@
+<mujoco model="yam_demo_box">
+  <worldbody>
+    <body name="box" pos="0.25 0 0.08">
+      <freejoint name="box_free"/>
+      <geom name="box_geom" type="box" size="0.025 0.025 0.025" mass="0.1" rgba="0.9 0.45 0.12 1" friction="1 0.01 0.001"/>
+    </body>
+  </worldbody>
+</mujoco>
